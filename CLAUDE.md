@@ -41,7 +41,7 @@ to `test-all`.
 
 ## Conventions
 
-- One branch per change, PR into `master`, no direct pushes.
+- One branch per change, PR into `main`, no direct pushes.
 - Pre-push hook mirrors CI's fast jobs. Install once per clone:
   `ln -sf ../../scripts/pre-push .git/hooks/pre-push`. Skip deliberately with
   `git push --no-verify`.
