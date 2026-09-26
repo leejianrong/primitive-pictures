@@ -91,7 +91,7 @@ func differenceFull(a, b *image.RGBA) float64 {
 func differencePartial(target, before, after *image.RGBA, score float64, lines []Scanline) float64 {
 	size := target.Bounds().Size()
 	w, h := size.X, size.Y
-	total := uint64(math.Pow(score*255, 2) * float64(w*h*4))
+	total := uint64(score * 255 * score * 255 * float64(w*h*4))
 	for _, line := range lines {
 		i := target.PixOffset(line.X1, line.Y)
 		for x := line.X1; x <= line.X2; x++ {

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Mirrors the cheap CI jobs locally. Install with:
+#   ln -sf ../../scripts/pre-push .git/hooks/pre-push
+# Skip once with: git push --no-verify
+
+set -e
+make check
+make test

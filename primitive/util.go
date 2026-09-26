@@ -9,7 +9,6 @@ import (
 	"image/gif"
 	"image/jpeg"
 	"image/png"
-	"io/ioutil"
 	"math"
 	"os"
 	"os/exec"
@@ -61,14 +60,14 @@ func SaveJPG(path string, im image.Image, quality int) error {
 		return err
 	}
 	defer file.Close()
-	return jpeg.Encode(file, im, &jpeg.Options{quality})
+	return jpeg.Encode(file, im, &jpeg.Options{Quality: quality})
 }
 
 func SaveGIF(path string, frames []image.Image, delay, lastDelay int) error {
 	g := gif.GIF{}
 	for i, src := range frames {
 		dst := image.NewPaletted(src.Bounds(), palette.Plan9)
-		draw.Draw(dst, dst.Rect, src, image.ZP, draw.Src)
+		draw.Draw(dst, dst.Rect, src, image.Point{}, draw.Src)
 		g.Image = append(g.Image, dst)
 		if i == len(frames)-1 {
 			g.Delay = append(g.Delay, lastDelay)
@@ -85,13 +84,15 @@ func SaveGIF(path string, frames []image.Image, delay, lastDelay int) error {
 }
 
 func SaveGIFImageMagick(path string, frames []image.Image, delay, lastDelay int) error {
-	dir, err := ioutil.TempDir("", "")
+	dir, err := os.MkdirTemp("", "")
 	if err != nil {
 		return err
 	}
 	for i, im := range frames {
 		path := filepath.Join(dir, fmt.Sprintf("%06d.png", i))
-		SavePNG(path, im)
+		if err := SavePNG(path, im); err != nil {
+			return err
+		}
 	}
 	args := []string{
 		"-loop", "0",
@@ -169,7 +170,7 @@ func rotate(x, y, theta float64) (rx, ry float64) {
 
 func imageToRGBA(src image.Image) *image.RGBA {
 	dst := image.NewRGBA(src.Bounds())
-	draw.Draw(dst, dst.Rect, src, image.ZP, draw.Src)
+	draw.Draw(dst, dst.Rect, src, image.Point{}, draw.Src)
 	return dst
 }
 
@@ -181,7 +182,7 @@ func copyRGBA(src *image.RGBA) *image.RGBA {
 
 func uniformRGBA(r image.Rectangle, c color.Color) *image.RGBA {
 	im := image.NewRGBA(r)
-	draw.Draw(im, im.Bounds(), &image.Uniform{c}, image.ZP, draw.Src)
+	draw.Draw(im, im.Bounds(), &image.Uniform{c}, image.Point{}, draw.Src)
 	return im
 }
 

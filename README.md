@@ -1,6 +1,10 @@
 # Primitive Pictures
 
+[![CI](https://github.com/leejianrong/primitive-pictures/actions/workflows/ci.yml/badge.svg)](https://github.com/leejianrong/primitive-pictures/actions/workflows/ci.yml)
+
 Reproducing images with geometric primitives.
+
+A fork of [fogleman/primitive](https://github.com/fogleman/primitive) by Michael Fogleman. See [NOTICE.md](NOTICE.md) for attribution and [LICENSE.md](LICENSE.md) for this fork's license.
 
 ![Example](https://www.michaelfogleman.com/static/primitive/examples/16550611738.200.128.4.5.png)
 
@@ -27,8 +31,15 @@ You can tweet a picture to the bot and it will process it for you.
 
 Run it on your own images! First, [install Go](https://golang.org/doc/install).
 
-    go get -u github.com/fogleman/primitive
-    primitive -i input.png -o output.png -n 100
+    go install github.com/leejianrong/primitive-pictures@latest
+    primitive-pictures -i input.png -o output.png -n 100
+
+Or build from a clone of this repo:
+
+    git clone https://github.com/leejianrong/primitive-pictures.git
+    cd primitive-pictures
+    make build
+    ./bin/primitive -i input.png -o output.png -n 100
 
 Small input images should be used (like 256x256px). You don't need the detail anyway and the code will run faster.
 

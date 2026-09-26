@@ -1,0 +1,16 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - errorlint
+    - unconvert
+  settings:
+    errcheck:
+      exclude-functions:
+        - (*os.File).Close
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

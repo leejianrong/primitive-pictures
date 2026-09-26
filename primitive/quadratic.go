@@ -39,7 +39,7 @@ func (q *Quadratic) Draw(dc *gg.Context, scale float64) {
 
 func (q *Quadratic) SVG(attrs string) string {
 	// TODO: this is a little silly
-	attrs = strings.Replace(attrs, "fill", "stroke", -1)
+	attrs = strings.ReplaceAll(attrs, "fill", "stroke")
 	return fmt.Sprintf(
 		"<path %s fill=\"none\" d=\"M %f %f Q %f %f, %f %f\" stroke-width=\"%f\" />",
 		attrs, q.X1, q.Y1, q.X2, q.Y2, q.X3, q.Y3, q.Width)
