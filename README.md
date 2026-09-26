@@ -48,7 +48,7 @@ Small input images should be used (like 256x256px). You don't need the detail an
 | `i` | n/a | input file |
 | `o` | n/a | output file |
 | `n` | n/a | number of shapes |
-| `m` | 1 | mode: 0=combo, 1=triangle, 2=rect, 3=ellipse, 4=circle, 5=rotatedrect, 6=beziers, 7=rotatedellipse, 8=polygon |
+| `m` | 1 | mode: 0=combo, 1=triangle, 2=rect, 3=ellipse, 4=circle, 5=rotatedrect, 6=beziers, 7=rotatedellipse, 8=polygon, 9=stipple |
 | `rep` | 0 | add N extra shapes each iteration with reduced search (mostly good for beziers) |
 | `nth` | 1 | save every Nth frame (only when `%d` is in output path) |
 | `r` | 256 | resize large input images to this size before processing |
@@ -56,8 +56,23 @@ Small input images should be used (like 256x256px). You don't need the detail an
 | `a` | 128 | color alpha (use `0` to let the algorithm choose alpha for each shape) |
 | `bg` | avg | starting background color (hex) |
 | `j` | 0 | number of parallel workers (default uses all cores) |
+| `grid` | 16 | stipple mode (9): grid cell size in pixels |
+| `jitter` | 3 | stipple mode (9): max jitter from grid center, in pixels |
 | `v` | off | verbose output |
 | `vv` | off | very verbose output |
+
+### Stipple / Pointillism Mode
+
+Mode `9` constrains circles to a jittered grid instead of searching freely
+across the canvas, for a stippled/pointillist look:
+
+    primitive -i input.png -o output.png -m 9 -n 600 -a 200 -grid 10 -jitter 3
+
+![Stipple example](examples/monalisa-stipple.png)
+
+Smaller `-grid` values give finer, denser dots; `-jitter` controls how far a
+dot can wander from its grid cell's center (`0` gives a perfectly regular
+grid, at the cost of looking mechanical).
 
 ### Output Formats
 

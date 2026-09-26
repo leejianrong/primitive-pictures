@@ -19,6 +19,11 @@ type Worker struct {
 	Rnd        *rand.Rand
 	Score      float64
 	Counter    int
+
+	// StippleGrid/StippleJitter configure ShapeTypeStipple (primitive/stipple.go).
+	// Zero values fall back to DefaultStippleGrid/DefaultStippleJitter.
+	StippleGrid   int
+	StippleJitter int
 }
 
 func NewWorker(target *image.RGBA) *Worker {
@@ -104,5 +109,7 @@ func (worker *Worker) RandomState(t ShapeType, a int) *State {
 		return NewState(worker, NewRandomRotatedEllipse(worker), a)
 	case ShapeTypePolygon:
 		return NewState(worker, NewRandomPolygon(worker, 4, false), a)
+	case ShapeTypeStipple:
+		return NewState(worker, NewRandomStipple(worker), a)
 	}
 }
