@@ -19,12 +19,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
+      - run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
       - run: make fmtcheck
       - run: make vet
+      - run: make lint
       - run: make tidycheck
 
   test:
