@@ -6,3 +6,5 @@
 set -e
 make check
 make test
+make python-check
+make python-test

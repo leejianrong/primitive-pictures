@@ -1,0 +1,31 @@
+[project]
+name = "ppics-pipeline"
+version = "0.1.0"
+description = "RunPod generation pipeline driver for primitive-pictures (prompt-gen -> diffusion -> primitive)"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+    "pytest>=8.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "S"]
+# S101: assert is fine in tests; S603/S607: subprocess calls are reviewed by hand (argv-list only,
+# never shell=True -- that's the thing being guarded against, see ADR-0002).
+ignore = ["S101", "S603", "S607"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

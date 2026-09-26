@@ -60,8 +60,16 @@ xbuild: ## Cross-compile for the platforms we claim to support
 run: build ## Build and run against the bundled Mona Lisa example (100 triangles)
 	$(BIN)/primitive -i examples/monalisa.png -o $(BIN)/monalisa.out.png -n 100
 
+.PHONY: python-check
+python-check: ## Lint + format-check the pipeline/ Python package
+	cd pipeline && uv run ruff check . && uv run ruff format --check .
+
+.PHONY: python-test
+python-test: ## Run the pipeline/ Python package's fast tests (no RunPod/network)
+	cd pipeline && uv run python -m pytest
+
 .PHONY: ci
-ci: check test-all xbuild vulncheck ## Everything CI runs
+ci: check test-all xbuild vulncheck python-check python-test ## Everything CI runs
 
 .PHONY: clean
 clean: ## Remove build artifacts
