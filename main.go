@@ -27,6 +27,8 @@ var (
 	Workers    int
 	Nth        int
 	Repeat     int
+	Grid       int
+	Jitter     int
 	V, VV      bool
 )
 
@@ -68,10 +70,12 @@ func init() {
 	flag.IntVar(&Alpha, "a", 128, "alpha value")
 	flag.IntVar(&InputSize, "r", 256, "resize large input images to this size")
 	flag.IntVar(&OutputSize, "s", 1024, "output image size")
-	flag.IntVar(&Mode, "m", 1, "0=combo 1=triangle 2=rect 3=ellipse 4=circle 5=rotatedrect 6=beziers 7=rotatedellipse 8=polygon")
+	flag.IntVar(&Mode, "m", 1, "0=combo 1=triangle 2=rect 3=ellipse 4=circle 5=rotatedrect 6=beziers 7=rotatedellipse 8=polygon 9=stipple")
 	flag.IntVar(&Workers, "j", 0, "number of parallel workers (default uses all cores)")
 	flag.IntVar(&Nth, "nth", 1, "save every Nth frame (put \"%d\" in path)")
 	flag.IntVar(&Repeat, "rep", 0, "add N extra shapes per iteration with reduced search")
+	flag.IntVar(&Grid, "grid", primitive.DefaultStippleGrid, "stipple mode (9): grid cell size in pixels")
+	flag.IntVar(&Jitter, "jitter", primitive.DefaultStippleJitter, "stipple mode (9): max jitter from grid center, in pixels")
 	flag.BoolVar(&V, "v", false, "verbose")
 	flag.BoolVar(&VV, "vv", false, "very verbose")
 }
@@ -150,6 +154,10 @@ func main() {
 
 	// run algorithm
 	model := primitive.NewModel(input, bg, OutputSize, Workers)
+	for _, w := range model.Workers {
+		w.StippleGrid = Grid
+		w.StippleJitter = Jitter
+	}
 	primitive.Log(1, "%d: t=%.3f, score=%.6f\n", 0, 0.0, model.Score)
 	start := time.Now()
 	frame := 0
