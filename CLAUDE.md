@@ -17,9 +17,15 @@ right and this file is stale — fix the file.
   moving it under `internal/`.
 - `bot/` — a standalone Python Twitter bot (Flickr sourcing + posting).
   Not part of the Go build/test loop.
+- `pipeline/` — the RunPod generation pipeline (uv-managed Python; see
+  `docs/PLAN.md` and `docs/SLICES.md`). `orchestrate.py` drives a batch
+  diffusion job via the vendored `runpod/launch.sh`; `runpod/generate.py` runs
+  on the pod, not locally. Separate from `bot/` — different job (ADR-0002).
 - `scripts/` — `pre-push` (git hook, see below), plus `html.py`/`process.py`
   helper scripts for batch runs.
 - `examples/` — sample input images used by `make run` and tests.
+- `docs/` — `PLAN.md`, `SLICES.md`, `QUESTIONS.md`, `adr/` for the RunPod
+  pipeline + pointillism-mode phase. Read `PLAN.md` before touching `pipeline/`.
 
 ## Commands
 
@@ -32,7 +38,15 @@ Run `make` with no target for the full list. The important ones:
 - `make xbuild` — cross-compile for linux/darwin/windows, amd64/arm64
 - `make run` — build and run against `examples/monalisa.png` (100 triangles)
 - `make vulncheck` — `govulncheck ./...`
+- `make python-check` — lint + format-check `pipeline/` (ruff, via `uv`)
+- `make python-test` — `pipeline/`'s fast tests (no RunPod/network involved)
 - `make ci` — everything CI runs, in one shot
+
+`pipeline/orchestrate.py --dry-run` builds and prints the full RunPod launch
+plan (the embedded job command, env overrides) without spending anything —
+always sanity-check a change this way before a real run. A real run needs
+`RUNPOD_API_KEY` in the environment and an account spend cap set in the
+RunPod console first (see docs/adr/0001).
 
 There is no separate "integration" test layer yet: the whole library is pure,
 in-process Go with no database/network/filesystem dependency to isolate. If
