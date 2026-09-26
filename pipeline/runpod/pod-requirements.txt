@@ -1,0 +1,13 @@
+# Installed on the pod at job-run time (inside the dead-man's-switch-protected
+# JOB_CMD, not before it -- see ADR-0001). Not part of the local `pipeline`
+# project's own dependencies; this is a different Python environment entirely.
+#
+# torch itself is expected to already be present in the base pod image
+# (config.DEFAULT_POD_IMAGE is a runpod/pytorch image) -- only the
+# diffusion-specific stack installs here.
+diffusers>=0.30
+transformers>=4.44
+accelerate>=0.33
+safetensors>=0.4
+sentencepiece>=0.2
+protobuf>=4.25

@@ -4,3 +4,9 @@
 
 /bin/
 
+/runs/
+/pipeline/.venv/
+/pipeline/.pytest_cache/
+/pipeline/runpod/.rp-state
+__pycache__/
+
