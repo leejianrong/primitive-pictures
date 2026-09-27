@@ -436,4 +436,11 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        # execute()'s finally already tore the pod down by this point -- this
+        # only replaces the default KeyboardInterrupt traceback with a clean
+        # exit, matching the conventional SIGINT exit code.
+        print("orchestrate: interrupted", file=sys.stderr)
+        raise SystemExit(130) from None
