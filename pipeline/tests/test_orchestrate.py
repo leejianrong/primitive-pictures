@@ -178,3 +178,37 @@ def test_process_run_mixed_success_and_failure(tmp_path):
     # process_run must have written the manifest to disk too, not just returned it.
     on_disk = manifest.read(run_dir / "manifest.json")
     assert on_disk == m
+
+
+def test_process_run_handles_pod_side_model_load_failure(tmp_path):
+    # Real incident (2026-09-27): one model failing to even load (a gated
+    # HuggingFace repo, in that case) must not crash process_run or lose the
+    # other models' results -- generate.py records file=None + an error for
+    # every prompt under that model instead of a file path.
+    run_dir = tmp_path / "run-test"
+    _write_fake_seed_image(run_dir / "out" / "sd15" / "000-a-cat.png")
+    (run_dir / "out").mkdir(parents=True, exist_ok=True)
+
+    pod_manifest = [
+        {"model": "sd15", "prompt": "a cat", "file": "sd15/000-a-cat.png", "seconds": 1.1},
+        {
+            "model": "flux-schnell",
+            "prompt": "a cat",
+            "file": None,
+            "error": "GatedRepoError: 401 Client Error",
+        },
+    ]
+    (run_dir / "out" / "generation-manifest.json").write_text(json.dumps(pod_manifest))
+
+    def fake_subprocess_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+    with patch.object(subprocess, "run", side_effect=fake_subprocess_run):
+        m = orchestrate.process_run(run_dir, Path("/fake/primitive"), shape_count=50)
+
+    assert m.ok_count == 1
+    assert m.failed_count == 1
+    failed_item = next(i for i in m.items if i.status == "failed")
+    assert failed_item.model == "flux-schnell"
+    assert failed_item.error == "GatedRepoError: 401 Client Error"
+    assert failed_item.primitive_png is None

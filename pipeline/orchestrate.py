@@ -168,6 +168,21 @@ def process_run(
 
     items: list[manifest.Item] = []
     for i, row in enumerate(rows):
+        common = {
+            "index": i,
+            "model": row["model"],
+            "prompt": row["prompt"],
+            "generation_seconds": row.get("seconds"),
+        }
+        if row.get("file") is None:
+            # Pod-side failure (model load or generation itself failed) --
+            # there's no seed image, so there's nothing for primitive to run
+            # on. Carry the pod's own error through unchanged.
+            items.append(
+                manifest.Item(**common, seed_image="", status="failed", error=row.get("error"))
+            )
+            continue
+
         seed_rel = f"out/{row['file']}"
         stem = Path(row["file"]).stem
         parent = Path(row["file"]).parent
@@ -189,13 +204,7 @@ def process_run(
             cmd += ["-m", str(shape_mode)]
 
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        common = {
-            "index": i,
-            "model": row["model"],
-            "prompt": row["prompt"],
-            "seed_image": seed_rel,
-            "generation_seconds": row.get("seconds"),
-        }
+        common["seed_image"] = seed_rel
         if result.returncode == 0:
             items.append(
                 manifest.Item(

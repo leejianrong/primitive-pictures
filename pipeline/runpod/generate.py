@@ -88,7 +88,15 @@ def main() -> int:
         backend = BACKENDS[model_name]
         print(f"pod: loading {backend.model_id} ({model_name})", flush=True)
         t0 = time.time()
-        pipe = build_pipeline(backend, dtype_map)
+        try:
+            pipe = build_pipeline(backend, dtype_map)
+        except Exception as e:  # noqa: BLE001 -- one model's failure must not lose the rest
+            print(f"pod: FAILED to load {model_name}: {e}", flush=True)
+            for prompt in prompts:
+                manifest_rows.append(
+                    {"model": model_name, "prompt": prompt, "file": None, "error": str(e)}
+                )
+            continue
         print(f"pod: loaded {model_name} in {time.time() - t0:.1f}s", flush=True)
 
         model_dir = out_dir / model_name
@@ -96,7 +104,14 @@ def main() -> int:
 
         for i, prompt in enumerate(prompts):
             t0 = time.time()
-            image = generate_one(pipe, backend, prompt)
+            try:
+                image = generate_one(pipe, backend, prompt)
+            except Exception as e:  # noqa: BLE001 -- same: isolate per-prompt failures too
+                print(f"pod: FAILED [{model_name}] {i + 1}/{len(prompts)}: {e}", flush=True)
+                manifest_rows.append(
+                    {"model": model_name, "prompt": prompt, "file": None, "error": str(e)}
+                )
+                continue
             elapsed = time.time() - t0
             filename = f"{i:03d}-{slugify(prompt)}.png"
             image.save(model_dir / filename)
@@ -105,6 +120,7 @@ def main() -> int:
                     "model": model_name,
                     "prompt": prompt,
                     "file": f"{model_name}/{filename}",
+                    "error": None,
                     "seconds": round(elapsed, 2),
                 }
             )
