@@ -5,9 +5,23 @@
 # torch itself is expected to already be present in the base pod image
 # (config.DEFAULT_POD_IMAGE is a runpod/pytorch image) -- only the
 # diffusion-specific stack installs here.
-diffusers>=0.30
-transformers>=4.44
-accelerate>=0.33
+#
+# diffusers pinned with an upper bound (2026-09-27, from a real failed run):
+# newer diffusers releases eagerly register a flash-attention custom op via
+# torch.library.custom_op at IMPORT time (its new "attention backend"
+# feature -- see docs/source/en/optimization/attention_backends.md upstream),
+# and that registration 500s with "infer_schema(func): Parameter q has
+# unsupported type torch.Tensor" against this pod image's torch build --
+# even though we never install flash-attn or ask for it. 0.31.0 predates
+# that refactor. Verified against a real pod before trusting this pin;
+# re-verify the same way before raising it.
+# transformers/accelerate pinned exact, not ranged: a range here forced pip's
+# resolver into several minutes of silent backtracking against whatever the
+# base image pre-installed (observed 2026-09-27). Exact versions make pip's
+# install fast and deterministic instead of a solver search.
+diffusers==0.31.0
+transformers==4.45.2
+accelerate==0.34.2
 safetensors>=0.4
 sentencepiece>=0.2
 protobuf>=4.25
