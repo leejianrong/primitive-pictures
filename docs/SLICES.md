@@ -67,22 +67,36 @@ back, and terminate. `runpodctl pod list` shows nothing running afterward.
 
 **Delivers:** R0 (fully), R3
 
+Built into `pipeline/orchestrate.py` (V1's driver), not a separate `run.py` as
+originally sketched — same file, since `orchestrate.py` already owned the
+plan/launch lifecycle and the primitive step just extends `execute()`.
+
 **Build plan**
 
 1. Write `pipeline/manifest.py`: run/item data model (ADR-0004),
    `schema_version`, read/write JSON.
-2. Write `pipeline/run.py`: takes `--prompts <file>` and the chosen
-   `--model`, drives V1's launcher, then for each returned seed image invokes
-   `primitive` as an argv-list subprocess (no `shell=True` — ADR-0002),
-   writing `primitive.png`/`primitive.svg` alongside the seed image.
+2. Extend `orchestrate.execute()`: after unpacking the pod's tar, read its
+   `out/generation-manifest.json` (written by `runpod/generate.py`) and, for
+   each seed image, invoke `primitive` as an argv-list subprocess (no
+   `shell=True` — ADR-0002), writing `<stem>.primitive.png`/`.svg` alongside
+   the seed image. New CLI flags: `--shape-count`, `--shape-mode`,
+   `--primitive-bin` (fails fast with a clear message pointing at `make
+   build` if the binary isn't found).
 3. Wire per-item failure handling: one failed item (bad seed image, `primitive`
    non-zero exit) is recorded as `status: failed` in the manifest; the run
-   continues to the next item.
-4. `runs/` added to `.gitignore`.
+   continues to the next item. Exit code is non-zero only if *every* item
+   failed (Q7).
+4. `runs/` in `.gitignore` — already done in V1.
+5. *(Beyond the original plan)* `--process-only RUN_DIR`: re-run the
+   primitive step against an already-populated run directory, skipping
+   RunPod entirely. This is what makes V2 fully testable and demoable
+   without spending anything — the same mechanism a real run uses, pointed
+   at a local stand-in `out/` tree instead of one just pulled off a pod.
 
-**Demo:** `pipeline/run.py --prompts examples/pipeline-prompts.txt` (5 prompts)
-completes unattended and prints a summary; `runs/<run_id>/manifest.json` shows
-5 `ok` items, each with a viewable `primitive.png`.
+**Demo:** manually populate a `runs/<id>/out/<model>/*.png` tree plus a
+`generation-manifest.json` (i.e. what a real pod run would have produced),
+then `orchestrate.py --process-only runs/<id>`. `runs/<id>/manifest.json`
+shows every item's status, each `ok` item has a viewable `.primitive.png`.
 
 **Rests on assumptions:** Q13 (Python driver) — if wrong, this whole slice's
 implementation language changes, though the shape (manifest, per-item status)
@@ -92,24 +106,28 @@ carries over.
 
 #### End-to-end
 
-- A 5-prompt file run against a cost-capped small batch produces 5 manifest
-  entries and 5 viewable `primitive.png` outputs, and total RunPod spend for
-  the run is under $0.50 (checked against the account's spend log).
-- A prompt file with one deliberately-broken entry (e.g. an empty prompt
-  string) still produces 4 `ok` items and 1 `failed` item with a readable
-  reason — the run does not abort.
+- `--process-only` against a directory with 3 valid seed images and 1
+  corrupt one produces 3 `ok` items with viewable `.primitive.png`/`.svg`
+  outputs and 1 `failed` item with `primitive`'s own error message, and the
+  run does not abort partway through.
+- The real RunPod path (5-prompt run, spend under $0.50) is the manual
+  acceptance test once credentials are available — not run in CI.
 
 #### Integration
 
 - The `primitive` subprocess call is built correctly (right binary path,
   right flags) and its exit code is captured into the manifest, without a
-  shell being invoked (assert on the `subprocess.run` call shape, not just its
-  output).
+  shell being invoked (assert on the `subprocess.run` call shape, not just
+  its output).
+- `process_run` writes `manifest.json` to disk, not just returns it in
+  memory — a caller that crashes right after can still recover the result.
 
 #### Unit
 
 - `manifest.py` round-trips (write then read) an example run with mixed
   ok/failed items and preserves `schema_version`.
+- `resolve_primitive_bin` raises a clear, actionable error (not a bare
+  `FileNotFoundError` with no context) when the binary is missing.
 
 ## V3: Prompt template bank
 

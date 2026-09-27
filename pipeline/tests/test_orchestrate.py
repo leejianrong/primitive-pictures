@@ -1,10 +1,12 @@
 import base64
 import json
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+import manifest
 import orchestrate
 
 
@@ -92,7 +94,64 @@ def test_execute_always_tears_down_even_if_relay_get_fails():
         raise AssertionError(f"unexpected launcher subcommand {args}")
 
     with patch.object(orchestrate, "_run_launcher", side_effect=fake_run_launcher):
-        rc = orchestrate.execute(plan, base_env={})
+        rc = orchestrate.execute(plan, base_env={}, primitive_bin=Path("/bin/true"))
 
     assert rc == 1
     assert calls == ["up", "relay-get", "down"]  # down MUST run even though relay-get failed
+
+
+def test_resolve_primitive_bin_missing_raises_clear_error():
+    with pytest.raises(FileNotFoundError, match="make build"):
+        orchestrate.resolve_primitive_bin("/not/a/real/path")
+
+
+def test_resolve_primitive_bin_accepts_existing_path(tmp_path):
+    fake_bin = tmp_path / "primitive"
+    fake_bin.write_text("#!/bin/sh\n")
+    fake_bin.chmod(0o755)
+    assert orchestrate.resolve_primitive_bin(str(fake_bin)) == fake_bin
+
+
+def _write_fake_seed_image(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # A 1x1 PNG is enough for `primitive` to load as a real image.
+    png_1x1 = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+    path.write_bytes(png_1x1)
+
+
+def test_process_run_mixed_success_and_failure(tmp_path):
+    run_dir = tmp_path / "run-test"
+    _write_fake_seed_image(run_dir / "out" / "sd15" / "000-a-cat.png")
+    (run_dir / "out" / "sd15" / "001-broken.png").parent.mkdir(parents=True, exist_ok=True)
+    (run_dir / "out" / "sd15" / "001-broken.png").write_bytes(b"not a real png")
+
+    pod_manifest = [
+        {"model": "sd15", "prompt": "a cat", "file": "sd15/000-a-cat.png", "seconds": 1.1},
+        {"model": "sd15", "prompt": "broken", "file": "sd15/001-broken.png", "seconds": 0.9},
+    ]
+    (run_dir / "out" / "generation-manifest.json").write_text(json.dumps(pod_manifest))
+
+    def fake_subprocess_run(cmd, **kwargs):
+        # Simulate `primitive`: succeed for the real PNG, fail for the corrupt one.
+        input_path = Path(cmd[cmd.index("-i") + 1])
+        if b"PNG" in input_path.read_bytes()[:8]:
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            cmd, returncode=1, stdout="", stderr="unrecognized file extension"
+        )
+
+    with patch.object(subprocess, "run", side_effect=fake_subprocess_run):
+        m = orchestrate.process_run(run_dir, Path("/fake/primitive"), shape_count=50)
+
+    assert m.ok_count == 1
+    assert m.failed_count == 1
+    ok_item = next(i for i in m.items if i.status == "ok")
+    failed_item = next(i for i in m.items if i.status == "failed")
+    assert ok_item.primitive_png == "out/sd15/000-a-cat.primitive.png"
+    assert failed_item.error == "unrecognized file extension"
+
+    # process_run must have written the manifest to disk too, not just returned it.
+    on_disk = manifest.read(run_dir / "manifest.json")
+    assert on_disk == m
