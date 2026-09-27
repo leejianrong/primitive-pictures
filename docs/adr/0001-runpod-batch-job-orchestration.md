@@ -127,3 +127,21 @@ real input to slice 1's model choice, not just quality/cost.
   confirmed via the REST response), then terminated and confirmed gone via
   `runpodctl pod list` — total spend for the check was a few seconds at
   $0.72/hr.
+- **Flux.1-schnell needs HF authentication; generate.py isolates per-model
+  failures (2026-09-27 addendum, from the real 3-model comparison run):**
+  SD1.5 and SDXL-Turbo both succeeded end-to-end on the first real
+  production run. Flux.1-schnell failed with `huggingface_hub.errors.
+  GatedRepoError: 401` — it's a gated HF repo requiring (1) accepting its
+  license at huggingface.co and (2) an access token. Neither is wired up
+  yet: `launch.sh`'s pod-create body has no `env` field, so there's
+  currently no way to hand a token into the container. Separately, this run
+  exposed a real robustness bug: `generate.py`'s tar-and-send step only ran
+  after its full model loop, so Flux's crash lost SD1.5 and SDXL-Turbo's
+  already-generated images too — nothing was ever shipped back. Fixed by
+  isolating both model-load and per-prompt generation in try/except inside
+  the loop; a failed model now gets `file: None` + its error recorded per
+  prompt, and every other model's results still ship. `orchestrate.py`'s
+  `process_run` updated to handle a `None` file (no seed image, so no
+  `primitive` invocation — the pod's error carries straight through).
+  Verified: intentionally broke the new `None`-handling branch and
+  confirmed the test fails with a clear `TypeError` before re-fixing it.
