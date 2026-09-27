@@ -76,12 +76,17 @@ DEFAULT_POD_IMAGE = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
 # and separately verifies the actual quoted cost after creation. Raise deliberately,
 # not by habit.
 #
-# 0.80, not 0.60: RunPod discontinued spot pods (verified 2026-09-27 -- see
-# launch.sh's RP_INTERRUPTIBLE comment), so this now has to clear on-demand
-# pricing for a GPU with enough VRAM for Flux.1-schnell. RTX PRO 4500 Blackwell
-# (32GB) real-quoted at $0.72/hr on 2026-09-27; re-check pricing before trusting
-# this blindly if it's been a while.
-DEFAULT_MAX_HOURLY_USD = 0.80
+# 1.75, not 0.80: RunPod discontinued spot pods (verified 2026-09-27 -- see
+# launch.sh's RP_INTERRUPTIBLE comment). Worse, real Flux.1-schnell runs OOM'd
+# on both a 24GB card (failed loading weights, ~22GB used) and a 32GB card
+# (failed mid-inference, ~31.36 of 31.37GB used) -- 32GB is not safe headroom
+# for this model. The A40 (48GB, the obvious next tier) has vanished from
+# RunPod's catalog entirely as of this date ("no instances currently
+# available" against every region). The next real tier with enough VRAM is an
+# A100 80GB, quoted at $1.59/hr secure on 2026-09-27. Re-check pricing/stock
+# before trusting this blindly if it's been a while -- this whole GPU
+# landscape has shifted twice already within one session.
+DEFAULT_MAX_HOURLY_USD = 1.75
 
 # Generous enough for a model download + a handful of images; each real run should
 # set this from the actual batch size rather than trust the default blindly.

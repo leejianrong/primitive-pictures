@@ -145,3 +145,40 @@ real input to slice 1's model choice, not just quality/cost.
   `primitive` invocation — the pod's error carries straight through).
   Verified: intentionally broke the new `None`-handling branch and
   confirmed the test fails with a clear `TypeError` before re-fixing it.
+- **HF auth fixed, then Flux OOM'd on a 24GB card that outranked the A40 by
+  luck of the draw (2026-09-27 addendum, from a follow-up diagnostic pod):**
+  `HF_TOKEN` now reaches the pod via `RP_POD_ENV_JSON` (`build_plan`'s
+  `hf_token` param), and a diagnostic run confirmed the `GatedRepoError` is
+  gone — Flux authenticates and loads its weights. It then failed with
+  `CUDA out of memory. Tried to allocate 90.00 MiB. GPU 0 has a total
+  capacity of 22.03 GiB...`. The GPU was the RTX PRO 4000 Blackwell (24GB),
+  which was second in `RP_GPU_TYPE`'s fallback list ahead of the A40 (48GB).
+  RunPod tries the list in listed order and stops at the first one it can
+  rent, not the biggest one, so a smaller card earlier in the list wins even
+  when a bigger one is also listed. `.env`/`.env.example`'s `RP_GPU_TYPE`
+  dropped the 24GB tier entirely: `NVIDIA RTX PRO 4500 Blackwell,NVIDIA A40`
+  (32GB and 48GB only), so any run that includes Flux always lands on a card
+  with real headroom rather than one that OOMs 90MiB short. Not yet
+  re-verified with a full comparison run including a successful Flux image.
+- **32GB wasn't enough either; settled on 48GB+ after two more real OOMs
+  (2026-09-27 addendum, from two follow-up verification runs):** re-ran with
+  the 32GB-tier fallback above and it OOM'd again, this time mid-inference
+  rather than at load: `CUDA out of memory. Tried to allocate 18.00 MiB. GPU
+  0 has a total capacity of 31.37 GiB of which 1.75 MiB is free... this
+  process has 31.36 GiB memory in use.` Flux's bf16 weights plus inference
+  activations sit right at the edge of 32GB — that tier is a near miss, not
+  headroom. Tried the A40 (48GB) next and RunPod's create endpoint 500'd with
+  `"There are no instances currently available"`; `runpodctl gpu list`
+  confirmed the A40 has zero stock in every region right now (it's simply not
+  in the catalog as available). Fell back further to an A100 80GB (real
+  quoted $1.59/hr secure), which required raising
+  `config.DEFAULT_MAX_HOURLY_USD` from 0.80 to 1.75 to clear the cost cap.
+  `RP_GPU_TYPE` is now `NVIDIA A40,NVIDIA A100-SXM4-80GB,NVIDIA A100 80GB
+  PCIe` (A40 first in case its stock returns — it's cheaper — with two real
+  80GB fallbacks). On the actual run, A40 stock had come back by the time the
+  job launched, landed there at $0.49/hr, and Flux.1-schnell generated
+  successfully in 2.05s with real headroom to spare. Verified end-to-end: a
+  real 288KB image was produced, `primitive` processed it into triangles, and
+  both were visually inspected. Total for this round of diagnosis: three real
+  pods created and terminated (confirmed via `runpodctl pod list` returning
+  `[]` after each), all under a few minutes each.
