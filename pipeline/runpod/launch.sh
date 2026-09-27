@@ -38,10 +38,17 @@ JOB_CMD="${RP_JOB_CMD:-sleep infinity}"          # what the pod runs (default: i
 
 COMPUTE_TYPE="${RP_COMPUTE_TYPE:-CPU}"            # CPU | GPU
 CLOUD_TYPE="${RP_CLOUD_TYPE:-SECURE}"            # SECURE | COMMUNITY
-INTERRUPTIBLE="${RP_INTERRUPTIBLE:-true}"        # spot by default (cheaper, ~5s reclaim; make jobs re-runnable)
+INTERRUPTIBLE="${RP_INTERRUPTIBLE:-false}"       # RunPod discontinued spot pods (verified 2026-09-27 via
+                                                  # a direct REST call: interruptible=true 500s with
+                                                  # "Spot pods are no longer offered"). On-demand only for now.
 CPU_FLAVORS="${RP_CPU_FLAVORS:-cpu5m,cpu3m}"      # tried in order (CPU)
 VCPU_COUNT="${RP_VCPU_COUNT:-4}"                  # (CPU)
-GPU_TYPES="${RP_GPU_TYPE:-}"                      # exact id(s), comma-sep, `runpodctl gpu list` (GPU)
+GPU_TYPES="${RP_GPU_TYPE:-}"                      # exact id(s), comma-sep (GPU). `runpodctl gpu list`'s
+                                                   # gpuId values aren't all valid here -- MIG variants
+                                                   # (e.g. "... MIG 1g.24gb") 400 on pod-create even though
+                                                   # gpu list shows them. The pod-create endpoint's actual
+                                                   # enum comes back in a 400's error body if you send an
+                                                   # invalid one; that's the authoritative list.
 GPU_COUNT="${RP_GPU_COUNT:-1}"                    # (GPU)
 CONTAINER_DISK_GB="${RP_CONTAINER_DISK_GB:-20}"
 VOLUME_GB="${RP_VOLUME_GB:-0}"                    # 0 = no persistent (billed) volume

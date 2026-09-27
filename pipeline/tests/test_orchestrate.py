@@ -34,7 +34,7 @@ def test_build_job_cmd_embeds_files_recoverably():
     b64_blobs = [
         part.split("echo ", 1)[1].split(" | base64", 1)[0]
         for part in job_cmd.split(" && ")
-        if part.startswith("echo ")
+        if part.startswith("echo ") and " | base64 -d > " in part
     ]
     assert len(b64_blobs) == 4
     decoded = [base64.b64decode(b).decode() for b in b64_blobs]
@@ -46,6 +46,11 @@ def test_build_job_cmd_embeds_files_recoverably():
 
     assert "python3 /workspace/generate.py" in job_cmd
     assert "--relay-code-base ppics-test" in job_cmd
+    # pip install must NOT be silenced (-q): with no output during a
+    # multi-minute dependency install, the idle-watchdog could kill the job
+    # mid-install on a slow connection.
+    assert "pip install -r /workspace/pod-requirements.txt" in job_cmd
+    assert "pip install -q" not in job_cmd
 
 
 def test_build_job_cmd_never_shells_out_unsafely():

@@ -110,3 +110,20 @@ real input to slice 1's model choice, not just quality/cost.
   project's RunPod `.env.example` that happened to size its own disk
   explicitly — worth double-checking against real download sizes before
   the first live run, since this is still an estimate, not a measurement.
+- **Spot pods discontinued; GPU type list needs fallbacks (2026-09-27
+  addendum, from the first real launch attempt):** `launch.sh` defaulted to
+  `interruptible: true` (spot); RunPod's pod-create endpoint now 500s that
+  with `"Spot pods are no longer offered"` — confirmed by posting the exact
+  create body directly. Default flipped to on-demand (`false`) in
+  `launch.sh`. Separately, `runpodctl gpu list`'s `gpuId` values aren't all
+  valid for pod creation — a MIG variant that `gpu list` shows 400s at
+  create time; the endpoint's actual enum only surfaces in a 400's error
+  body. GPU availability also shifts hour to hour, so `RP_GPU_TYPE` should
+  always carry 2-3 comma-separated fallback ids, not one. `.env.example`'s
+  default cost cap moved 0.60 → 0.80 to clear real on-demand pricing for a
+  GPU with enough VRAM for Flux.1-schnell (RTX PRO 4500 Blackwell, 32GB,
+  quoted $0.72/hr secure on this date). Verified end-to-end: a real pod was
+  created (id, cost, and dead-man's-switch-free dockerStartCmd all
+  confirmed via the REST response), then terminated and confirmed gone via
+  `runpodctl pod list` — total spend for the check was a few seconds at
+  $0.72/hr.

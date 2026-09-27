@@ -75,7 +75,13 @@ DEFAULT_POD_IMAGE = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
 # Conservative default; launch.sh (RP_MAX_HOURLY_USD) refuses to launch above this,
 # and separately verifies the actual quoted cost after creation. Raise deliberately,
 # not by habit.
-DEFAULT_MAX_HOURLY_USD = 0.60
+#
+# 0.80, not 0.60: RunPod discontinued spot pods (verified 2026-09-27 -- see
+# launch.sh's RP_INTERRUPTIBLE comment), so this now has to clear on-demand
+# pricing for a GPU with enough VRAM for Flux.1-schnell. RTX PRO 4500 Blackwell
+# (32GB) real-quoted at $0.72/hr on 2026-09-27; re-check pricing before trusting
+# this blindly if it's been a while.
+DEFAULT_MAX_HOURLY_USD = 0.80
 
 # Generous enough for a model download + a handful of images; each real run should
 # set this from the actual batch size rather than trust the default blindly.

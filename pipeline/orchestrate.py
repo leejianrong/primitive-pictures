@@ -78,7 +78,11 @@ def build_job_cmd(prompts: list[str], model_names: list[str], relay_code_base: s
         f"echo {_b64(config_py)} | base64 -d > /workspace/config.py",
         f"echo {_b64(pod_requirements)} | base64 -d > /workspace/pod-requirements.txt",
         f"echo {_b64(prompts_json)} | base64 -d > /workspace/prompts.json",
-        "pip install -q -r /workspace/pod-requirements.txt",
+        # No -q: pip's own progress output keeps the idle-watchdog's "log
+        # growing" check satisfied during the (potentially multi-minute)
+        # dependency install, which produces zero output otherwise.
+        "echo 'pod: installing dependencies'",
+        "pip install -r /workspace/pod-requirements.txt",
         (
             "python3 /workspace/generate.py --prompts-file /workspace/prompts.json "
             f"--out-dir /workspace/out --relay-code-base {relay_code_base}"
