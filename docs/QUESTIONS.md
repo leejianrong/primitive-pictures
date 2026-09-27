@@ -1,9 +1,12 @@
 # Questions — Phase 1 (RunPod pipeline + pointillism mode)
 
-Scope: (1) a batch pipeline — optional LLM prompt-gen → RunPod diffusion image-gen →
-local `primitive` processing — and (2) a new "pointillism" placement mode in the Go
-core. Ideas 3–5 (video, storyboarded movies, trained draw-model) are out of scope
-here; carried only as a roadmap note in PLAN.md.
+Scope: (1) a batch pipeline — prompt template bank (or a hand-written file) →
+RunPod diffusion image-gen → local `primitive` processing — and (2) a new
+"pointillism" placement mode in the Go core. Ideas 3–5 (video, storyboarded
+movies, trained draw-model) are out of scope here; carried only as a roadmap
+note in PLAN.md. Note (2026-09-27, ADR-0006): the prompt step was originally
+planned as an LLM call (see the now-superseded Q8/ADR-0005) and is now a
+static template bank instead.
 
 Statuses: `DECIDED` (user answered) · `ASSUMED` (default taken, correct it if wrong)
 · `FORK` (waiting on the user) · `DEFERRED` (not needed this milestone).
@@ -23,7 +26,7 @@ _(empty — round closed)_
 | Q5 | Concurrency: two writers? | ASSUMED | One pipeline invocation at a time, no locking needed | PLAN §Shape |
 | Q6 | Interfaces: single write path? | ASSUMED | One CLI entrypoint, argv-list subprocess calls to `primitive` (not `shell=True`) | ADR-0002 |
 | Q7 | Failure behaviour on a bad item | ASSUMED | Partial-result-with-gaps-flagged; batch continues past one item's failure; manifest records per-item status | PLAN §Shape |
-| Q8 | Prompt-gen LLM: hosted API or RunPod-hosted OSS model | ASSUMED | Hosted API (Anthropic Claude, e.g. Haiku) — a GPU pod for seconds of text generation wastes the cheap-budget with no upside | ADR-0005 |
+| Q8 | Prompt-gen LLM: hosted API or RunPod-hosted OSS model | **SUPERSEDED** | No longer an LLM call at all — replaced by a static prompt template bank, no external dependency. If an LLM step ever comes back, it's OpenRouter (`deepseek-chat`), not Anthropic | ADR-0006 |
 | Q9 | Runtime shape: service pod or batch job; whose safety wrapper | ASSUMED | One-shot batch job (boot once per run, not per prompt); project vendors its own cost-safety launcher rather than depending on the runpod-jobs skill's local path | ADR-0001 |
 | Q10 | Measurable success, checkably | ASSUMED | Pointillism: shape centers grid-aligned within a jitter bound (unit test). Pipeline: 5-prompt run completes unattended, 5 manifest entries, pod confirmed terminated, spend under $0.50 | PLAN §Testing |
 | Q11 | Secrets handling | ASSUMED | `RUNPOD_API_KEY`/`ANTHROPIC_API_KEY` from env only, never logged; `runs/` git-ignored; new driver must not repeat `bot/main.py`'s `shell=True` pattern | ADR-0002 |
@@ -31,6 +34,9 @@ _(empty — round closed)_
 | Q13 | Pipeline driver language | ASSUMED | Python — `bot/main.py:120-129` already shells out to the compiled `primitive` binary via `subprocess`, and RunPod/diffusers/LLM SDKs are Python-first. New `pipeline/` dir, not reusing `bot/` | ADR-0002 |
 | F1 | Which diffusion model(s) for the RunPod batch job? | DECIDED | Compare SDXL-Turbo, SD1.5, and Flux.1-schnell as part of slice 1 (not decided on paper); generate at each model's practical native resolution rather than forcing 256×256 output, since `primitive` already resizes input to 256 by default — see ADR-0001's resolution note. SDXL (full) dropped, too costly for the stated budget | ADR-0001, SLICES V1 |
 | F2 | How does pointillism integrate with the existing hill-climb loop? | DECIDED | Constrained-random: reuse `Model.Step`/`Worker` unchanged; the new mode's random shape generator snaps candidate centers to a jittered grid cell | ADR-0003 |
+| F3 | Prompt bank category list — these 5 as a starting set, or more? | DECIDED | `landscapes`, `cityscapes`, `animal-portraits`, `animal-groups`, `wildlife-scenes` as-is | ADR-0006, SLICES V3 |
+| F4 | Prompt selection strategy: seeded random vs exhaustive capped combinations | DECIDED | Seeded random sampling — same `--seed` reproduces the same set exactly, without needing to enumerate the full cross product | ADR-0006, SLICES V3 |
+| F5 | Default model to record for a future OpenRouter-based LLM step | DECIDED | `deepseek-chat` (DeepSeek-V3) via OpenRouter, OpenAI-compatible client — recorded only, not built | ADR-0006 |
 
 ## Deferred
 
@@ -51,7 +57,8 @@ _(empty — round closed)_
 | Concurrency and conflict | Q5 |
 | Interfaces and contracts | Q6, Q13 |
 | Failure behaviour | Q7 |
-| External dependencies | Q8, F1 |
+| External dependencies | Q8 (superseded), F1 |
+| Domain: prompt bank design | F3, F4, F5 |
 | Runtime and deployment | Q9 |
 | Measurable success | Q10 |
 | Security and secrets | Q11 |

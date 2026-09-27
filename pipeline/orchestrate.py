@@ -22,6 +22,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import promptbank
 from config import (
     DEFAULT_MAX_HOURLY_USD,
     DEFAULT_MAX_LIFETIME_SECS,
@@ -160,9 +161,48 @@ def execute(plan: LaunchPlan, base_env: dict[str, str]) -> int:
         print(down.stderr, file=sys.stderr)
 
 
+def _split_csv(value: str | None) -> list[str] | None:
+    if not value:
+        return None
+    return [v.strip() for v in value.split(",") if v.strip()]
+
+
+def resolve_prompts(args: argparse.Namespace) -> list[str]:
+    """Exactly one prompt source: --prompts a file, or --count from the bank."""
+    if args.prompts and args.count:
+        raise ValueError("pass either --prompts or --count (bank sampling), not both")
+    if args.prompts:
+        return [
+            line.strip() for line in Path(args.prompts).read_text().splitlines() if line.strip()
+        ]
+    if args.count:
+        return promptbank.sample(
+            count=args.count,
+            seed=args.seed,
+            categories=_split_csv(args.category),
+            styles=_split_csv(args.style),
+        )
+    raise ValueError("give either --prompts <file> or --count N (bank sampling)")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--prompts", required=True, help="path to a newline-delimited prompt file")
+    parser.add_argument("--prompts", help="path to a newline-delimited prompt file")
+    parser.add_argument(
+        "--category",
+        help="comma-separated bank categories (default: all); see --list-bank",
+    )
+    parser.add_argument(
+        "--style",
+        help="comma-separated bank styles (default: any); see --list-bank",
+    )
+    parser.add_argument("--count", type=int, help="number of prompts to sample from the bank")
+    parser.add_argument("--seed", type=int, default=0, help="bank sampling seed (default 0)")
+    parser.add_argument(
+        "--list-bank",
+        action="store_true",
+        help="print the bank's categories and styles, then exit",
+    )
     parser.add_argument(
         "--model",
         default="compare",
@@ -178,7 +218,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    prompts = [line.strip() for line in Path(args.prompts).read_text().splitlines() if line.strip()]
+    if args.list_bank:
+        print("categories:", ", ".join(promptbank.CATEGORY_NAMES))
+        print("styles:", ", ".join(promptbank.STYLES))
+        return 0
+
+    prompts = resolve_prompts(args)
     plan = build_plan(
         prompts,
         args.model,
@@ -187,10 +232,18 @@ def main(argv: list[str] | None = None) -> int:
         pod_image=args.pod_image,
     )
 
+    # Writing the resolved prompt set to disk is free (no RunPod/network
+    # involved) and is what makes a bank-sampled run reproducible/inspectable
+    # after the fact -- do this whether or not we go on to spend anything.
+    plan.run_dir.mkdir(parents=True, exist_ok=True)
+    (plan.run_dir / "prompts.txt").write_text("\n".join(plan.prompts) + "\n")
+
     if args.dry_run:
         print(f"run_id: {plan.run_id}")
         print(f"models: {plan.model_names}")
-        print(f"prompts: {len(plan.prompts)}")
+        print(f"prompts ({len(plan.prompts)}):")
+        for p in plan.prompts:
+            print(f"  - {p}")
         print("env overrides:")
         for k, v in plan.env_overrides.items():
             shown = v if k != "RP_JOB_CMD" else f"<{len(v)} chars, see below>"

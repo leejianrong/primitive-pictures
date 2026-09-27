@@ -20,7 +20,11 @@ right and this file is stale — fix the file.
 - `pipeline/` — the RunPod generation pipeline (uv-managed Python; see
   `docs/PLAN.md` and `docs/SLICES.md`). `orchestrate.py` drives a batch
   diffusion job via the vendored `runpod/launch.sh`; `runpod/generate.py` runs
-  on the pod, not locally. Separate from `bot/` — different job (ADR-0002).
+  on the pod, not locally. `promptbank.py` is a static, seeded prompt
+  template bank (`--category`/`--style`/`--count`/`--seed`) — no LLM, no
+  external dependency (ADR-0006, supersedes the earlier LLM-based ADR-0005;
+  if an LLM step ever comes back it's OpenRouter/DeepSeek, not Anthropic).
+  Separate from `bot/` — different job (ADR-0002).
 - `scripts/` — `pre-push` (git hook, see below), plus `html.py`/`process.py`
   helper scripts for batch runs.
 - `examples/` — sample input images used by `make run` and tests.

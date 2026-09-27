@@ -1,6 +1,6 @@
 # ADR-0005: Prompt generation uses a hosted LLM API, not a RunPod-hosted model
 
-- Status: Accepted
+- Status: **Superseded by ADR-0006** (2026-09-27) — kept for history, not current.
 - Date: 2026-09-26
 - Deciders: Jian, Claude (planning session)
 

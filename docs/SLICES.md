@@ -111,43 +111,64 @@ carries over.
 - `manifest.py` round-trips (write then read) an example run with mixed
   ok/failed items and preserves `schema_version`.
 
-## V3: LLM prompt-gen layer
+## V3: Prompt template bank
+
+Redefined by ADR-0006 (2026-09-27): no LLM call, no external dependency.
+Independent of V1/V2/V4 — buildable and fully testable today, same as V4.
 
 **Delivers:** R4
 
 **Build plan**
 
-1. Write `pipeline/promptgen.py`: theme + count → N short prompts via the
-   Anthropic API (ADR-0005), returning the same prompt-list shape V2 already
-   consumes.
-2. Extend `pipeline/run.py` with `--theme "..." --count N` as an alternative
-   to `--prompts <file>`; the generated prompts get written to
+1. Write `pipeline/promptbank.py`: a subject bank grouped by category
+   (`landscapes`, `cityscapes`, `animal-portraits`, `animal-groups`,
+   `wildlife-scenes`) and a separate style/mood modifier list
+   (photorealistic, watercolor, oil painting, retro film photo, golden-hour
+   lighting, storm lighting, minimalist, vibrant, muted pastel). A sampling
+   function takes `categories`, `styles`, `count`, and `seed`, and returns
+   exactly `count` prompt strings (subject + 0–2 sampled modifiers) —
+   deterministic for a given seed.
+2. Extend `pipeline/orchestrate.py` with `--category ... --style ...
+   --count N --seed N` as an alternative to `--prompts <file>` (mutually
+   exclusive with it); the generated prompts get written to
    `runs/<run_id>/prompts.txt` so the run is reproducible/inspectable even
    though the input wasn't a hand-written file.
+3. `--list-bank` (or similar) prints the available categories/styles, so a
+   user doesn't have to read the source to know what's in it.
 
-**Demo:** `pipeline/run.py --theme "underwater cities" --count 5` generates 5
-prompts, writes them to disk, then runs exactly V2's pipeline against them.
+**Demo:** `pipeline/orchestrate.py --category landscapes,wildlife-scenes
+--style watercolor --count 5 --seed 42 --dry-run` prints 5 reproducible
+prompts; the same command run again produces byte-identical output.
 
-**Rests on assumptions:** Q8 (hosted API, not RunPod) — if wrong (e.g. a
-future no-external-API requirement), only this module changes.
+**Rests on assumptions:** none from the register — this slice's design
+(ADR-0006) was a direct decision, not a default.
 
 ### Test plan
 
 #### End-to-end
 
-- `--theme "..." --count 5` produces a 5-line `prompts.txt` and then the same
-  5-item manifest/output structure as V2's direct-file path.
+- `--category ... --count 5 --seed 42` produces a 5-line `prompts.txt`, and
+  running the identical command again produces an identical file (same
+  seed, same output — the reproducibility guarantee this slice exists for).
+- `--category` and `--prompts` given together is a clear usage error, not
+  silently-one-wins behavior.
 
 #### Integration
 
-- With the Anthropic API mocked to return malformed output (not N lines), the
-  driver fails fast with a clear error rather than silently passing a bad
-  prompt list into V2's pipeline.
+- The generated prompt list flows into the same manifest/output structure
+  as V2's direct-file path (i.e. `orchestrate.py` doesn't need to know
+  whether prompts came from a file or the bank past the point of selection).
 
 #### Unit
 
-- Given a mocked API response, `promptgen.py` returns exactly N prompt
-  strings, trimmed and non-empty.
+- Given a fixed seed, `promptbank.sample()` returns exactly `count` prompts,
+  each non-empty and containing a recognizable subject from the requested
+  categories.
+- Two different seeds produce different prompt sets; the same seed run
+  twice produces the same set (this is the core guarantee, tested directly
+  rather than just implied by the E2E test).
+- Requesting a category or style not in the bank is a clear `ValueError`,
+  not a silent empty result.
 
 ## V4: Pointillism mode
 
