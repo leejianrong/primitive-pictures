@@ -22,6 +22,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 import manifest
 import promptbank
 from config import (
@@ -274,6 +276,12 @@ def resolve_prompts(args: argparse.Namespace) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Loads RUNPOD_API_KEY / RP_GPU_TYPE etc. from a gitignored .env at the
+    # repo root if present (see .env.example) -- never printed, never
+    # constructed into argv, only ever read into the process environment.
+    # A missing .env is not an error: load_dotenv() is a silent no-op then.
+    load_dotenv(REPO_ROOT / ".env")
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prompts", help="path to a newline-delimited prompt file")
     parser.add_argument(

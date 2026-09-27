@@ -8,5 +8,9 @@
 /pipeline/.venv/
 /pipeline/.pytest_cache/
 /pipeline/runpod/.rp-state
+/pipeline/.ruff_cache/
 __pycache__/
+
+/.env
+!/.env.example
 

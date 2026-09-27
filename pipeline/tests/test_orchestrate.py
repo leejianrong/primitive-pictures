@@ -10,6 +10,21 @@ import manifest
 import orchestrate
 
 
+def test_main_loads_dotenv_from_repo_root_before_anything_else():
+    # Verifies main() wires up .env loading at all, without touching the
+    # real filesystem or a real .env -- load_dotenv is mocked, so this can't
+    # pick up (or require) an actual secret.
+    with (
+        patch.object(orchestrate, "load_dotenv") as mock_load_dotenv,
+        patch.object(orchestrate, "promptbank") as mock_bank,
+    ):
+        mock_bank.CATEGORY_NAMES = ()
+        mock_bank.STYLES = ()
+        orchestrate.main(["--list-bank"])
+
+    mock_load_dotenv.assert_called_once_with(orchestrate.REPO_ROOT / ".env")
+
+
 def test_build_job_cmd_embeds_files_recoverably():
     job_cmd = orchestrate.build_job_cmd(["a cat"], ["sd15"], "ppics-test")
 

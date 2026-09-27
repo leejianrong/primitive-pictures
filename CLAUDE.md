@@ -54,8 +54,11 @@ Run `make` with no target for the full list. The important ones:
 `pipeline/orchestrate.py --dry-run` builds and prints the full RunPod launch
 plan (the embedded job command, env overrides) without spending anything —
 always sanity-check a change this way before a real run. A real run needs
-`RUNPOD_API_KEY` in the environment and an account spend cap set in the
-RunPod console first (see docs/adr/0001).
+`RUNPOD_API_KEY` + `RP_GPU_TYPE` and an account spend cap set in the RunPod
+console first (see docs/adr/0001). Copy `.env.example` to `.env` (git-ignored)
+and fill in real values — `orchestrate.py` loads it automatically on every
+run via `python-dotenv`; nothing needs to be exported by hand. Never
+`cat`/echo/print `.env` or its values.
 
 There is no separate "integration" test layer yet: the whole library is pure,
 in-process Go with no database/network/filesystem dependency to isolate. If
