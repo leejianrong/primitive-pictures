@@ -22,6 +22,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import manifest
 import promptbank
 from config import (
     DEFAULT_MAX_HOURLY_USD,
@@ -34,6 +35,8 @@ PIPELINE_DIR = Path(__file__).resolve().parent
 RUNPOD_DIR = PIPELINE_DIR / "runpod"
 REPO_ROOT = PIPELINE_DIR.parent
 RUNS_DIR = REPO_ROOT / "runs"
+DEFAULT_PRIMITIVE_BIN = REPO_ROOT / "bin" / "primitive"
+DEFAULT_SHAPE_COUNT = 100
 
 
 @dataclass
@@ -128,8 +131,89 @@ def _run_launcher(args: list[str], env: dict[str, str]) -> subprocess.CompletedP
     )
 
 
-def execute(plan: LaunchPlan, base_env: dict[str, str]) -> int:
-    """Run the plan for real: up -> relay-get -> unpack, always down in finally."""
+def resolve_primitive_bin(explicit: str | None) -> Path:
+    candidate = Path(explicit) if explicit else DEFAULT_PRIMITIVE_BIN
+    if not candidate.exists():
+        raise FileNotFoundError(
+            f"primitive binary not found at {candidate} -- run `make build` first, "
+            "or pass --primitive-bin"
+        )
+    return candidate
+
+
+def process_run(
+    run_dir: Path,
+    primitive_bin: Path,
+    shape_count: int = DEFAULT_SHAPE_COUNT,
+    shape_mode: int | None = None,
+) -> manifest.Manifest:
+    """Run `primitive` on every pod-generated seed image, building
+    runs/<run_id>/manifest.json. Reads the pod's own out/generation-manifest.json
+    (written by runpod/generate.py) to know what to process.
+
+    One item's failure (bad seed image, primitive non-zero exit) doesn't abort
+    the rest -- partial-result-with-gaps-flagged, recorded per item.
+    """
+    pod_manifest_path = run_dir / "out" / "generation-manifest.json"
+    rows = json.loads(pod_manifest_path.read_text())
+
+    items: list[manifest.Item] = []
+    for i, row in enumerate(rows):
+        seed_rel = f"out/{row['file']}"
+        stem = Path(row["file"]).stem
+        parent = Path(row["file"]).parent
+        primitive_png_rel = f"out/{parent}/{stem}.primitive.png"
+        primitive_svg_rel = f"out/{parent}/{stem}.primitive.svg"
+
+        cmd = [
+            str(primitive_bin),
+            "-i",
+            str(run_dir / seed_rel),
+            "-o",
+            str(run_dir / primitive_png_rel),
+            "-o",
+            str(run_dir / primitive_svg_rel),
+            "-n",
+            str(shape_count),
+        ]
+        if shape_mode is not None:
+            cmd += ["-m", str(shape_mode)]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        common = {
+            "index": i,
+            "model": row["model"],
+            "prompt": row["prompt"],
+            "seed_image": seed_rel,
+            "generation_seconds": row.get("seconds"),
+        }
+        if result.returncode == 0:
+            items.append(
+                manifest.Item(
+                    **common,
+                    status="ok",
+                    primitive_png=primitive_png_rel,
+                    primitive_svg=primitive_svg_rel,
+                )
+            )
+        else:
+            error = (result.stderr or result.stdout or "unknown error").strip()[:500]
+            items.append(manifest.Item(**common, status="failed", error=error))
+
+    m = manifest.Manifest(run_id=run_dir.name, items=items)
+    manifest.write(run_dir / "manifest.json", m)
+    return m
+
+
+def execute(
+    plan: LaunchPlan,
+    base_env: dict[str, str],
+    primitive_bin: Path,
+    shape_count: int = DEFAULT_SHAPE_COUNT,
+    shape_mode: int | None = None,
+) -> int:
+    """Run the plan for real: up -> relay-get -> unpack -> primitive per item,
+    always down in finally."""
     plan.run_dir.mkdir(parents=True, exist_ok=True)
     env = {**base_env, **plan.env_overrides}
 
@@ -155,7 +239,11 @@ def execute(plan: LaunchPlan, base_env: dict[str, str]) -> int:
         with tarfile.open(archive) as tar:
             tar.extractall(plan.run_dir, filter="data")
         print(f"orchestrate: unpacked into {plan.run_dir / 'out'}")
-        return 0
+
+        m = process_run(plan.run_dir, primitive_bin, shape_count, shape_mode)
+        manifest_path = plan.run_dir / "manifest.json"
+        print(f"orchestrate: {m.ok_count} ok, {m.failed_count} failed -> {manifest_path}")
+        return 1 if m.ok_count == 0 else 0
     finally:
         down = _run_launcher(["down"], env)
         print(down.stderr, file=sys.stderr)
@@ -216,12 +304,43 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="build and print the launch plan (job command, env) without spending anything",
     )
+    parser.add_argument(
+        "--shape-count",
+        type=int,
+        default=DEFAULT_SHAPE_COUNT,
+        help=f"shapes per primitive run (default {DEFAULT_SHAPE_COUNT})",
+    )
+    parser.add_argument(
+        "--shape-mode",
+        type=int,
+        help="primitive's -m mode (default: primitive's own default, triangles)",
+    )
+    parser.add_argument(
+        "--primitive-bin",
+        help=f"path to the primitive binary (default: {DEFAULT_PRIMITIVE_BIN})",
+    )
+    parser.add_argument(
+        "--process-only",
+        metavar="RUN_DIR",
+        help=(
+            "skip RunPod entirely -- just (re-)run primitive over an existing "
+            "run directory's out/generation-manifest.json. No prompts/model "
+            "needed; useful for iterating on shape-count/mode locally, or for "
+            "testing this step without spending anything"
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.list_bank:
         print("categories:", ", ".join(promptbank.CATEGORY_NAMES))
         print("styles:", ", ".join(promptbank.STYLES))
         return 0
+
+    if args.process_only:
+        primitive_bin = resolve_primitive_bin(args.primitive_bin)
+        m = process_run(Path(args.process_only), primitive_bin, args.shape_count, args.shape_mode)
+        print(f"orchestrate: {m.ok_count} ok, {m.failed_count} failed")
+        return 1 if m.ok_count == 0 else 0
 
     prompts = resolve_prompts(args)
     plan = build_plan(
@@ -252,9 +371,17 @@ def main(argv: list[str] | None = None) -> int:
         print(plan.job_cmd)
         return 0
 
+    primitive_bin = resolve_primitive_bin(args.primitive_bin)
+
     import os
 
-    return execute(plan, dict(os.environ))
+    return execute(
+        plan,
+        dict(os.environ),
+        primitive_bin,
+        shape_count=args.shape_count,
+        shape_mode=args.shape_mode,
+    )
 
 
 if __name__ == "__main__":

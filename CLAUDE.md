@@ -19,7 +19,12 @@ right and this file is stale — fix the file.
   Not part of the Go build/test loop.
 - `pipeline/` — the RunPod generation pipeline (uv-managed Python; see
   `docs/PLAN.md` and `docs/SLICES.md`). `orchestrate.py` drives a batch
-  diffusion job via the vendored `runpod/launch.sh`; `runpod/generate.py` runs
+  diffusion job via the vendored `runpod/launch.sh`, then runs `primitive`
+  (argv-list subprocess, never `shell=True`) on every seed image and writes
+  `runs/<run_id>/manifest.json` (`manifest.py`, ADR-0004) — one failed item
+  doesn't abort the rest. `orchestrate.py --process-only RUN_DIR` re-runs
+  just that primitive step against an existing run directory, no RunPod
+  needed — the way to test/iterate on this locally. `runpod/generate.py` runs
   on the pod, not locally. `promptbank.py` is a static, seeded prompt
   template bank (`--category`/`--style`/`--count`/`--seed`) — no LLM, no
   external dependency (ADR-0006, supersedes the earlier LLM-based ADR-0005;
