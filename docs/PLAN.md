@@ -61,7 +61,7 @@ owner, single machine. (Q1)
 | R1 | RunPod batch job generates seed images across 3 candidate models (SDXL-Turbo, SD1.5, Flux.1-schnell), gated by cost safety | Must-have |
 | R2 | `primitive` gets a pointillism mode: grid+jitter constrained shape placement | Must-have |
 | R3 | Manifest captures per-item status (ok/failed+reason), model/params used, and a schema version | Must-have |
-| R4 | Optional LLM step turns a theme + count into a prompt set | Nice-to-have |
+| R4 | A prompt template bank (category × style, seeded random sampling) generates a prompt set with no external dependency | Nice-to-have |
 | R5 | Lint + fast unit tests for the new Python pipeline package | Nice-to-have |
 
 ## Shape
@@ -71,8 +71,8 @@ owner, single machine. (Q1)
 | S1 | Pointillism candidate generator: new `-m` mode snaps random shape centers to a jittered grid cell; `Model.Step`/`Worker` otherwise unchanged | ADR-0003 |
 | S2 | Vendored RunPod launcher (`pipeline/runpod/launch.sh`): spend-cap check, dead-man's-switch armed as the pod's first action, driver-side `trap … EXIT INT TERM` | ADR-0001 |
 | S3 | Pod-side batch script: reads the full prompt set once, generates every image for the selected model(s), ships results back over the `runpodctl` relay, self-terminates | ADR-0001 |
-| S4 | Python driver (`pipeline/run.py`): orchestrates prompt-gen (optional) → pod launch → relay pull → `primitive` subprocess per item → manifest write | ADR-0002, ADR-0004 |
-| S5 | Prompt-gen module (`pipeline/promptgen.py`): theme + count → N short prompts via a hosted LLM API, isolated behind one function | ADR-0005 |
+| S4 | Python driver (`pipeline/orchestrate.py`): orchestrates prompt selection (bank or file) → pod launch → relay pull → `primitive` subprocess per item → manifest write | ADR-0002, ADR-0004 |
+| S5 | Prompt bank module (`pipeline/promptbank.py`): category × style seeded random sampling → N prompts, no external dependency | ADR-0006 |
 | S6 | Run/manifest data model: filesystem-addressed `runs/<run_id>/`, no database | ADR-0004 |
 
 ## Affordances
@@ -82,8 +82,8 @@ owner, single machine. (Q1)
 | Affordance | Kind | Wires to |
 |------------|------|----------|
 | `primitive -m <pointillism-mode> ...` | CLI flag (existing binary, extended) | `primitive/` shape generator (S1) |
-| `pipeline/run.py --prompts prompts.txt [--model sdxl-turbo\|sd15\|flux-schnell\|compare]` | CLI command | S2–S4, S6 |
-| `pipeline/run.py --theme "..." --count N` | CLI command (alternative input) | S5, then same path as above |
+| `pipeline/orchestrate.py --prompts prompts.txt [--model sdxl-turbo\|sd15\|flux-schnell\|compare]` | CLI command | S2–S4, S6 |
+| `pipeline/orchestrate.py --category ... --style ... --count N --seed N` | CLI command (alternative input) | S5, then same path as above |
 | `runs/<run_id>/manifest.json` | Generated artifact | Read by the user; future phase-3 input |
 
 ## Implementation decisions
@@ -92,13 +92,16 @@ owner, single machine. (Q1)
   constant) plus new CLI flags for grid spacing / jitter radius, following the
   existing `-m`-numbered-mode convention documented in the README's flag table.
 - `pipeline/` is a new top-level Python package, independent of `bot/`
-  (ADR-0002). Structure: `pipeline/run.py` (CLI entry), `pipeline/promptgen.py`,
-  `pipeline/manifest.py`, `pipeline/runpod/launch.sh` (driver-side launcher),
-  `pipeline/runpod/generate.py` (pod-side script, one per model backend).
+  (ADR-0002). Structure: `pipeline/orchestrate.py` (CLI entry),
+  `pipeline/promptbank.py`, `pipeline/manifest.py`, `pipeline/runpod/launch.sh`
+  (driver-side launcher), `pipeline/runpod/generate.py` (pod-side script, one
+  per model backend).
 - All subprocess invocation of `primitive` uses argv-list `subprocess.run`,
   never `shell=True` (ADR-0002).
-- Secrets (`RUNPOD_API_KEY`, `ANTHROPIC_API_KEY`) come from environment only;
-  never logged, never written into the manifest.
+- Secrets (`RUNPOD_API_KEY`) come from environment only; never logged, never
+  written into the manifest. No LLM API key is needed for V3 — the prompt
+  bank has no external dependency (ADR-0006). If an LLM step is ever added
+  back, it's OpenRouter, not Anthropic (ADR-0006).
 - `runs/` is git-ignored, matching the project's existing generated-artifact
   convention.
 
@@ -110,12 +113,13 @@ Two independent seams, tested at very different costs:
   pure function of a fixed test image and RNG — verifiable in a fast unit test
   with no GPU, no network, folded into the existing `make test` gate.
 - **Pipeline (Python, external dependencies by design):** manifest read/write,
-  prompt-gen's own logic (LLM call mocked), and the `primitive` subprocess
-  argv-construction (assert no `shell=True`, correct arguments) are all unit-
-  testable with no network/GPU. The actual RunPod run — real cost, real
-  secrets — is the slice 1 acceptance test, run manually/on demand, not wired
-  into CI. (CI cost/secrets handling for this is deliberately deferred; see
-  Open risks.)
+  the prompt bank's sampling logic (seeded, so exact output is assertable),
+  and the `primitive` subprocess argv-construction (assert no `shell=True`,
+  correct arguments) are all unit-testable with no network/GPU — no mocking
+  needed for prompt generation, since it now has no external call to mock.
+  The actual RunPod run — real cost, real secrets — is the slice 1 acceptance
+  test, run manually/on demand, not wired into CI. (CI cost/secrets handling
+  for this is deliberately deferred; see Open risks.)
 
 ## Assumed defaults
 
@@ -123,7 +127,7 @@ Two independent seams, tested at very different costs:
 |----|---------|---------------|
 | Q1 | Single-owner tool, no auth | Low — nothing here assumes otherwise structurally |
 | Q4/Q9 | RunPod step is a one-shot batch job; project vendors its own safety launcher | Medium — reworking to a service shape would touch S2/S3 |
-| Q8 | Prompt-gen uses a hosted LLM API, not RunPod | Low — isolated behind `promptgen.py`, swappable |
+| Q8 | *(superseded — see ADR-0006)* Prompt generation is a static template bank, not an LLM call | Low — isolated behind `promptbank.py`, swappable if a real need for LLM-generated prompts emerges |
 | Q13 | Pipeline driver is Python | High if wrong — but grounded in a checkable precedent (`bot/main.py`), not a guess |
 | Q3/Q12 | Filesystem + JSON manifest, no DB, `schema_version` from day one | Low — additive if a DB is ever wanted later |
 
