@@ -82,6 +82,35 @@ def test_build_plan_env_overrides_shape():
         assert "RUNPOD_API_KEY" not in value
 
 
+def test_build_plan_without_hf_token_has_no_pod_env_json():
+    plan = orchestrate.build_plan(["a prompt"], "sd15", run_id="run-test-0002")
+    assert "RP_POD_ENV_JSON" not in plan.env_overrides
+
+
+def test_build_plan_with_hf_token_sets_pod_env_json():
+    plan = orchestrate.build_plan(
+        ["a prompt"], "flux-schnell", run_id="run-test-0003", hf_token="hf_fake_test_value"
+    )
+    assert json.loads(plan.env_overrides["RP_POD_ENV_JSON"]) == {"HF_TOKEN": "hf_fake_test_value"}
+
+
+def test_dry_run_never_prints_the_pod_env_json_value(tmp_path, monkeypatch, capsys):
+    """Exercises the real --dry-run code path in main(), not a re-implementation."""
+    prompts_file = tmp_path / "prompts.txt"
+    prompts_file.write_text("a prompt\n")
+    monkeypatch.setenv("HF_TOKEN", "hf_should_never_appear")
+    monkeypatch.setattr(orchestrate, "RUNS_DIR", tmp_path / "runs")
+    with patch.object(orchestrate, "load_dotenv"):
+        rc = orchestrate.main(
+            ["--prompts", str(prompts_file), "--model", "flux-schnell", "--dry-run"]
+        )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "hf_should_never_appear" not in out
+    assert "RP_POD_ENV_JSON=<" in out
+    assert "redacted" in out
+
+
 def test_run_launcher_argv_shape():
     """The driver must invoke launch.sh as an argv list, never shell=True."""
     with patch.object(subprocess, "run") as mock_run:
@@ -97,7 +126,8 @@ def test_run_launcher_argv_shape():
     assert kwargs.get("shell", False) is False
 
 
-def test_execute_always_tears_down_even_if_relay_get_fails():
+def test_execute_always_tears_down_even_if_relay_get_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestrate, "RUNS_DIR", tmp_path / "runs")
     plan = orchestrate.build_plan(["a prompt"], "sd15", run_id="run-test-0002")
 
     up_result = subprocess.CompletedProcess(args=[], returncode=0, stdout="pod-abc\n", stderr="")

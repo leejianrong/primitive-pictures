@@ -53,6 +53,11 @@ GPU_COUNT="${RP_GPU_COUNT:-1}"                    # (GPU)
 CONTAINER_DISK_GB="${RP_CONTAINER_DISK_GB:-20}"
 VOLUME_GB="${RP_VOLUME_GB:-0}"                    # 0 = no persistent (billed) volume
 POD_PORT="${RP_POD_PORT:-}"                       # optional inbound port, e.g. 8000; empty = none
+POD_ENV_JSON="${RP_POD_ENV_JSON:-}"               # optional JSON object, e.g. '{"HF_TOKEN":"..."}',
+                                                   # merged into the pod's container env. NOTE: RunPod's
+                                                   # own pod-get/create response echoes this back verbatim
+                                                   # (same as it does PUBLIC_KEY) -- never print $resp/$info
+                                                   # raw anywhere a secret could be in this field.
 
 MIN_RAM_GB="${RP_MIN_RAM_GB:-0}"                  # abort if the created pod has less (0 = skip check)
 MAX_HOURLY_USD="${RP_MAX_HOURLY_USD:-1.00}"      # `up` refuses to launch/keep a pod above this
@@ -158,8 +163,9 @@ cmd_up() {
     compute_json="\"computeType\":\"CPU\",\"cpuFlavorIds\":[${f}],\"vcpuCount\":${VCPU_COUNT}"
   fi
   log "creating ${CLOUD_TYPE} $([ "$INTERRUPTIBLE" = true ] && echo spot || echo on-demand) ${COMPUTE_TYPE} pod (image=${POD_IMAGE})"
-  local body id resp
-  body="{\"name\":\"${POD_NAME}\",\"imageName\":\"${POD_IMAGE}\",${compute_json},\"cloudType\":\"${CLOUD_TYPE}\",\"interruptible\":${INTERRUPTIBLE},\"containerDiskInGb\":${CONTAINER_DISK_GB},\"volumeInGb\":${VOLUME_GB},\"ports\":[${ports_json}],\"dockerStartCmd\":[\"bash\",\"-lc\",$(json_string "$start_cmd")]}"
+  local body id resp env_json
+  env_json="${POD_ENV_JSON:-{\}}"
+  body="{\"name\":\"${POD_NAME}\",\"imageName\":\"${POD_IMAGE}\",${compute_json},\"cloudType\":\"${CLOUD_TYPE}\",\"interruptible\":${INTERRUPTIBLE},\"containerDiskInGb\":${CONTAINER_DISK_GB},\"volumeInGb\":${VOLUME_GB},\"ports\":[${ports_json}],\"env\":${env_json},\"dockerStartCmd\":[\"bash\",\"-lc\",$(json_string "$start_cmd")]}"
   resp="$(rp_api POST /pods "$body")"
   id="$(printf '%s' "$resp" | jq -r '.id // .pod.id // empty' 2>/dev/null || true)"
   [ -n "${id:-}" ] || die "create returned no id (verify the REST shape; response withheld to avoid leaking anything)"
