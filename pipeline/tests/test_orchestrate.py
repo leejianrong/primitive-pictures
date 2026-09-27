@@ -68,6 +68,9 @@ def test_build_plan_env_overrides_shape():
     assert plan.env_overrides["RP_COMPUTE_TYPE"] == "GPU"
     assert plan.env_overrides["RP_POD_NAME"] == "ppics-run-test-0001"
     assert "RP_JOB_CMD" in plan.env_overrides
+    # `--model compare` downloads all 3 models' weights onto one pod --
+    # launch.sh's own built-in default (20GB) isn't enough headroom for that.
+    assert int(plan.env_overrides["RP_CONTAINER_DISK_GB"]) > 20
     # the secret must never be constructed into a plan value -- it only ever
     # travels through the process environment, untouched by this code.
     for value in plan.env_overrides.values():

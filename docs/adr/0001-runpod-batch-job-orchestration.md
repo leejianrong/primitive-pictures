@@ -100,3 +100,13 @@ real input to slice 1's model choice, not just quality/cost.
 - Diffusion generation resolution is decoupled from `primitive`'s input
   resolution by design — if `primitive`'s default resize value ever changes, the
   pipeline's cost assumptions should be revisited, not just the flag value.
+- **Container disk sizing (2026-09-27 addendum):** `--model compare`
+  downloads all three models' weights onto one pod. `launch.sh`'s own
+  built-in default (`RP_CONTAINER_DISK_GB`, 20GB) is sized for a single small
+  job, not this — Flux.1-schnell alone (bf16 transformer + T5-XXL text
+  encoder) is in the tens-of-GB range. `config.DEFAULT_CONTAINER_DISK_GB` is
+  80GB, threaded through as its own `--container-disk-gb` flag rather than
+  left to `launch.sh`'s default. Caught by comparing against another
+  project's RunPod `.env.example` that happened to size its own disk
+  explicitly — worth double-checking against real download sizes before
+  the first live run, since this is still an estimate, not a measurement.
