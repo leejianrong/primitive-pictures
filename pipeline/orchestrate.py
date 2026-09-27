@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import subprocess
 import sys
 import tarfile
@@ -99,6 +100,7 @@ def build_plan(
     max_lifetime_secs: int = DEFAULT_MAX_LIFETIME_SECS,
     pod_image: str = DEFAULT_POD_IMAGE,
     container_disk_gb: int = DEFAULT_CONTAINER_DISK_GB,
+    hf_token: str | None = None,
 ) -> LaunchPlan:
     if not prompts:
         raise ValueError("no prompts given")
@@ -119,6 +121,15 @@ def build_plan(
         "RP_CONTAINER_DISK_GB": str(container_disk_gb),
         "RP_STATE_FILE": str(RUNS_DIR / run_id / ".rp-state"),
     }
+    # HF_TOKEN needs to travel as a literal container env value for gated
+    # models (Flux.1-schnell) -- huggingface_hub picks it up automatically
+    # from the env, no code change needed on the pod side. This is the
+    # sanctioned exception in the handling-secrets skill: the secret has to
+    # land in a resource we're creating. NOTE: RunPod's own pod-get/create
+    # response echoes the `env` field back verbatim (same as PUBLIC_KEY) --
+    # never print a raw pod-create/get response anywhere this could surface.
+    if hf_token:
+        env_overrides["RP_POD_ENV_JSON"] = json.dumps({"HF_TOKEN": hf_token})
     return LaunchPlan(
         run_id=run_id,
         prompts=prompts,
@@ -383,6 +394,7 @@ def main(argv: list[str] | None = None) -> int:
         max_lifetime_secs=args.max_lifetime_secs,
         pod_image=args.pod_image,
         container_disk_gb=args.container_disk_gb,
+        hf_token=os.environ.get("HF_TOKEN"),
     )
 
     # Writing the resolved prompt set to disk is free (no RunPod/network
@@ -399,15 +411,19 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {p}")
         print("env overrides:")
         for k, v in plan.env_overrides.items():
-            shown = v if k != "RP_JOB_CMD" else f"<{len(v)} chars, see below>"
+            if k == "RP_JOB_CMD":
+                shown = f"<{len(v)} chars, see below>"
+            elif k == "RP_POD_ENV_JSON":
+                # May carry HF_TOKEN -- never print it, even in a dry-run.
+                shown = f"<{len(v)} chars, redacted>"
+            else:
+                shown = v
             print(f"  {k}={shown}")
         print("--- RP_JOB_CMD ---")
         print(plan.job_cmd)
         return 0
 
     primitive_bin = resolve_primitive_bin(args.primitive_bin)
-
-    import os
 
     return execute(
         plan,
