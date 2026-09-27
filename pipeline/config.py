@@ -68,6 +68,20 @@ BACKENDS: dict[str, Backend] = {
 
 ALL_BACKEND_NAMES = tuple(BACKENDS.keys())
 
+# Chosen 2026-09-27 from a real 3-model comparison run (docs/SLICES.md V1
+# steps 5-6; same 3 prompts, same run, all at each model's native
+# resolution -- see runs/run-20260927-113021). All three produced usable
+# `primitive` source material at negligible cost (9 images, all <2s each,
+# well under $0.01 of GPU time total). Flux.1-schnell won on the combination
+# of the two things that don't wash out at this scale: sharpest/most
+# consistent composition across all 3 prompts (esp. the wolves and city
+# skyline), and Apache-2.0 -- the only one of the three with no commercial-use
+# restriction. SDXL-Turbo was competitive on quality but is licensed
+# Non-Commercial Research only, which conflicts with this project's `bot/`
+# roadmap; SD1.5's OpenRAIL-M sits in between but still carries behavioral-use
+# restrictions Apache-2.0 doesn't. Still selectable via `--model`.
+DEFAULT_MODEL = "flux-schnell"
+
 # Verify this tag is still current at https://hub.docker.com/r/runpod/pytorch/tags
 # before a real run -- RunPod's official images are updated frequently.
 DEFAULT_POD_IMAGE = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
