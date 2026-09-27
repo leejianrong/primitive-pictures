@@ -31,6 +31,7 @@ from config import (
     DEFAULT_CONTAINER_DISK_GB,
     DEFAULT_MAX_HOURLY_USD,
     DEFAULT_MAX_LIFETIME_SECS,
+    DEFAULT_MODEL,
     DEFAULT_POD_IMAGE,
     resolve_backends,
 )
@@ -328,8 +329,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--model",
-        default="compare",
-        help="backend name, or 'compare' to run all of them (default)",
+        default=DEFAULT_MODEL,
+        help=f"backend name (default: {DEFAULT_MODEL}), or 'compare' to run all of them",
     )
     parser.add_argument("--max-hourly-usd", type=float, default=DEFAULT_MAX_HOURLY_USD)
     parser.add_argument("--max-lifetime-secs", type=int, default=DEFAULT_MAX_LIFETIME_SECS)

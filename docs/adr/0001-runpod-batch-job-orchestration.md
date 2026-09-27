@@ -182,3 +182,18 @@ real input to slice 1's model choice, not just quality/cost.
   both were visually inspected. Total for this round of diagnosis: three real
   pods created and terminated (confirmed via `runpodctl pod list` returning
   `[]` after each), all under a few minutes each.
+- **Model selection resolved: Flux.1-schnell (2026-09-27 addendum, from the
+  real 3-model comparison run, `runs/run-20260927-113021`):** same 3 prompts
+  across SD1.5, SDXL-Turbo, and Flux.1-schnell on one pod ($0.49/hr A40, 9/9
+  images ok, all under 2.5s each — negligible cost). All three produced usable
+  `primitive` source material; none was a clear quality loser. Flux.1-schnell
+  won on two things that don't wash out at this scale: the most consistently
+  sharp/well-composed output across all 3 prompts, and its license (Apache-2.0)
+  — the only one of the three with no commercial-use restriction. SDXL-Turbo's
+  license (Stability AI Non-Commercial Research Community License) rules it
+  out for this project's `bot/` roadmap; SD1.5's OpenRAIL-M is more permissive
+  but still carries behavioral-use restrictions Apache-2.0 doesn't. Recorded as
+  `config.DEFAULT_MODEL` and the `orchestrate.py --model` CLI default; still
+  selectable via `--model sd15|sdxl-turbo|compare`. Closes the open fork this
+  ADR deferred above ("the choice of default is made from the real
+  cost/quality/speed tradeoff... not from paper specs").
