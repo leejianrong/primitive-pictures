@@ -81,6 +81,14 @@ DEFAULT_MAX_HOURLY_USD = 0.60
 # set this from the actual batch size rather than trust the default blindly.
 DEFAULT_MAX_LIFETIME_SECS = 2400
 
+# launch.sh's own default (RP_CONTAINER_DISK_GB) is 20GB, sized for a single small
+# job -- nowhere near enough for `--model compare`, which downloads all three
+# models' weights onto one pod. Flux.1-schnell alone (bf16 transformer + T5-XXL
+# text encoder) is in the tens-of-GB range; combined with SD1.5 and SDXL-Turbo,
+# 20GB fails partway through. 80GB gives real headroom for all three plus
+# pip/package overhead.
+DEFAULT_CONTAINER_DISK_GB = 80
+
 
 def resolve_backends(selection: str) -> list[Backend]:
     """`--model` CLI value -> list of Backends. 'compare' means all of them."""

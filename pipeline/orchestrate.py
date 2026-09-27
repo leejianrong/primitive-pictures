@@ -22,9 +22,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 import manifest
 import promptbank
 from config import (
+    DEFAULT_CONTAINER_DISK_GB,
     DEFAULT_MAX_HOURLY_USD,
     DEFAULT_MAX_LIFETIME_SECS,
     DEFAULT_POD_IMAGE,
@@ -91,6 +94,7 @@ def build_plan(
     max_hourly_usd: float = DEFAULT_MAX_HOURLY_USD,
     max_lifetime_secs: int = DEFAULT_MAX_LIFETIME_SECS,
     pod_image: str = DEFAULT_POD_IMAGE,
+    container_disk_gb: int = DEFAULT_CONTAINER_DISK_GB,
 ) -> LaunchPlan:
     if not prompts:
         raise ValueError("no prompts given")
@@ -108,6 +112,7 @@ def build_plan(
         "RP_COMPUTE_TYPE": "GPU",
         "RP_MAX_HOURLY_USD": str(max_hourly_usd),
         "RP_MAX_LIFETIME_SECS": str(max_lifetime_secs),
+        "RP_CONTAINER_DISK_GB": str(container_disk_gb),
         "RP_STATE_FILE": str(RUNS_DIR / run_id / ".rp-state"),
     }
     return LaunchPlan(
@@ -274,6 +279,12 @@ def resolve_prompts(args: argparse.Namespace) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Loads RUNPOD_API_KEY / RP_GPU_TYPE etc. from a gitignored .env at the
+    # repo root if present (see .env.example) -- never printed, never
+    # constructed into argv, only ever read into the process environment.
+    # A missing .env is not an error: load_dotenv() is a silent no-op then.
+    load_dotenv(REPO_ROOT / ".env")
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prompts", help="path to a newline-delimited prompt file")
     parser.add_argument(
@@ -299,6 +310,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-hourly-usd", type=float, default=DEFAULT_MAX_HOURLY_USD)
     parser.add_argument("--max-lifetime-secs", type=int, default=DEFAULT_MAX_LIFETIME_SECS)
     parser.add_argument("--pod-image", default=DEFAULT_POD_IMAGE)
+    parser.add_argument(
+        "--container-disk-gb",
+        type=int,
+        default=DEFAULT_CONTAINER_DISK_GB,
+        help=(
+            f"pod container disk size in GB (default {DEFAULT_CONTAINER_DISK_GB}, "
+            "sized for --model compare downloading all 3 models' weights at once)"
+        ),
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -349,6 +369,7 @@ def main(argv: list[str] | None = None) -> int:
         max_hourly_usd=args.max_hourly_usd,
         max_lifetime_secs=args.max_lifetime_secs,
         pod_image=args.pod_image,
+        container_disk_gb=args.container_disk_gb,
     )
 
     # Writing the resolved prompt set to disk is free (no RunPod/network

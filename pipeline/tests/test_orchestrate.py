@@ -10,6 +10,21 @@ import manifest
 import orchestrate
 
 
+def test_main_loads_dotenv_from_repo_root_before_anything_else():
+    # Verifies main() wires up .env loading at all, without touching the
+    # real filesystem or a real .env -- load_dotenv is mocked, so this can't
+    # pick up (or require) an actual secret.
+    with (
+        patch.object(orchestrate, "load_dotenv") as mock_load_dotenv,
+        patch.object(orchestrate, "promptbank") as mock_bank,
+    ):
+        mock_bank.CATEGORY_NAMES = ()
+        mock_bank.STYLES = ()
+        orchestrate.main(["--list-bank"])
+
+    mock_load_dotenv.assert_called_once_with(orchestrate.REPO_ROOT / ".env")
+
+
 def test_build_job_cmd_embeds_files_recoverably():
     job_cmd = orchestrate.build_job_cmd(["a cat"], ["sd15"], "ppics-test")
 
@@ -53,6 +68,9 @@ def test_build_plan_env_overrides_shape():
     assert plan.env_overrides["RP_COMPUTE_TYPE"] == "GPU"
     assert plan.env_overrides["RP_POD_NAME"] == "ppics-run-test-0001"
     assert "RP_JOB_CMD" in plan.env_overrides
+    # `--model compare` downloads all 3 models' weights onto one pod --
+    # launch.sh's own built-in default (20GB) isn't enough headroom for that.
+    assert int(plan.env_overrides["RP_CONTAINER_DISK_GB"]) > 20
     # the secret must never be constructed into a plan value -- it only ever
     # travels through the process environment, untouched by this code.
     for value in plan.env_overrides.values():
