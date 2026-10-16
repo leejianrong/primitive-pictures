@@ -1,0 +1,38 @@
+# Pod-side dependencies for the video-gen job (generate_video.py), separate
+# from pod-requirements.txt (the image job). They are NOT interchangeable:
+# the image job pins diffusers==0.31.0, which predates Wan2.2 entirely.
+#
+# Pinned exactly, the same way the image job's are (a range let pip pick
+# whatever was newest, and that is what broke the first real attempts --
+# see ADR-0008's addendum). Verified OFFLINE, on CPU torch==2.8.0 (the video
+# pod image's torch, config.DEFAULT_VIDEO_POD_IMAGE), in a throwaway venv on
+# 2026-10-15/16, including one real attention forward pass through a tiny Wan
+# transformer (imports alone passed on torch 2.4.0 and a real pod still crashed
+# in attention -- diffusers 0.35 needs torch >= 2.5):
+#   - diffusers 0.35.2 imports cleanly on torch 2.4.0 (the flash-attention
+#     custom-op registration failure that forced the image job's old pin does
+#     not reproduce), and has WanImageToVideoPipeline with the
+#     `expand_timesteps` argument the TI2V-5B checkpoint's model_index.json
+#     sets. diffusers 0.34 and older do not; they also fail to import
+#     against a current transformers.
+#   - an unbounded `transformers` resolves to 5.x, which refuses to load
+#     PyTorch below 2.5 ("PyTorch >= 2.5 is required") -- the text encoder
+#     cannot load on this pod image. 4.45.2 (the image job's known-good
+#     version) works with diffusers 0.35.2 and builds UMT5EncoderModel.
+#   - the checkpoint's VAE/transformer configs load under diffusers 0.35.2.
+# NOT verified off-GPU: actually running inference, or CUDA behaviour --
+# only a real pod run can confirm those.
+diffusers==0.35.2
+transformers==4.45.2
+accelerate==0.34.2
+safetensors>=0.4
+sentencepiece>=0.2
+protobuf>=4.25
+# diffusers' Wan prompt cleaning calls ftfy.fix_text() unconditionally, but diffusers does not
+# depend on it: a real pod died with "name 'ftfy' is not defined" (2026-10-15).
+ftfy==6.3.1
+# Needed for diffusers.utils.export_to_video -- the frames themselves come
+# directly from the pipeline's own output, this is only for the viewable
+# .mp4 written for human inspection.
+imageio[ffmpeg]==2.38.1
+imageio-ffmpeg==0.6.0
