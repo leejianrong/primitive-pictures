@@ -64,6 +64,10 @@ MAX_HOURLY_USD="${RP_MAX_HOURLY_USD:-1.00}"      # `up` refuses to launch/keep a
 MAX_LIFETIME_SECS="${RP_MAX_LIFETIME_SECS:-3600}" # hard ceiling (raise well past a long job)
 IDLE_TIMEOUT_SECS="${RP_IDLE_TIMEOUT_SECS:-900}"  # reap if the job log stops growing this long
 IDLE_CHECK_SECS="${RP_IDLE_CHECK_SECS:-60}"
+EXIT_GRACE_SECS="${RP_EXIT_GRACE_SECS:-30}"      # linger this long after the job exits before self-terminating,
+                                                  # so a crashing job's last log lines are still readable
+                                                  # (the pod's logs vanish the instant it is deleted). The
+                                                  # max-lifetime guard keeps running during it.
 
 RUNPODCTL_VERSION="${RP_RUNPODCTL_VERSION:-v2.14.0}"   # pinned for the pod-side install (relay-list match)
 API_BASE="${RP_API_BASE:-https://rest.runpod.io/v1}"
@@ -85,7 +89,14 @@ require_key() { : "${RUNPOD_API_KEY:?set RUNPOD_API_KEY (a dedicated, limited-sc
 # Call the REST API. The bearer token goes to curl via a config file on STDIN, never argv/a URL.
 rp_api() {
   require_key
-  local method="$1" path="$2" body="${3:-}" args=(--silent --show-error --fail-with-body -X "$1")
+  # --connect-timeout/--max-time: 2026-09-27 incident -- this call had NO timeout at all, so a
+  # single network stall (RunPod API unresponsive, a dropped connection) hung the entire driver
+  # process indefinitely, silently defeating every deadline this project relies on -- including
+  # `cmd_down`'s own termination call, the one thing that's supposed to be unconditional. A stuck
+  # local process was killed by hand to recover; see ADR-0001's addendum. 30s is generous for any
+  # of this API's calls (pod list/create/delete/status all normally respond in well under that).
+  local method="$1" path="$2" body="${3:-}"
+  local args=(--silent --show-error --fail-with-body --connect-timeout 10 --max-time 30 -X "$1")
   [ -n "$body" ] && args+=(-H 'content-type: application/json' --data-binary "$body")
   printf 'header = "Authorization: Bearer %s"\n' "$RUNPOD_API_KEY" | curl "${args[@]}" -K - "${API_BASE}${path}"
 }
@@ -139,7 +150,7 @@ JOB=\$!
     elif [ \$(( now - changed )) -ge ${IDLE_TIMEOUT_SECS} ]; then terminate "idle ${IDLE_TIMEOUT_SECS}s" ; break ; fi
   done
 ) &
-wait "\$JOB" ; terminate "job exited"
+wait "\$JOB" ; sleep ${EXIT_GRACE_SECS} ; terminate "job exited"
 LAUNCH
 }
 
@@ -166,7 +177,22 @@ cmd_up() {
   local body id resp env_json
   env_json="${POD_ENV_JSON:-{\}}"
   body="{\"name\":\"${POD_NAME}\",\"imageName\":\"${POD_IMAGE}\",${compute_json},\"cloudType\":\"${CLOUD_TYPE}\",\"interruptible\":${INTERRUPTIBLE},\"containerDiskInGb\":${CONTAINER_DISK_GB},\"volumeInGb\":${VOLUME_GB},\"ports\":[${ports_json}],\"env\":${env_json},\"dockerStartCmd\":[\"bash\",\"-lc\",$(json_string "$start_cmd")]}"
-  resp="$(rp_api POST /pods "$body")"
+  local create_rc=0
+  resp="$(rp_api POST /pods "$body")" || create_rc=$?
+  if [ "$create_rc" -ne 0 ]; then
+    # RunPod's reason ("no instances currently available", a rejected field, ...) is in the error body, which
+    # `set -e` used to discard along with the failed call (2026-10-16: a bare "HTTP 500" and no way to tell
+    # stock from config). Show it, but redact every pod-env value first -- the API echoes `env` back verbatim
+    # on success and we can't rule it out on errors -- and cap the length.
+    local reason; reason="$(printf '%s' "$resp" | jq -r '.error // .message // .' 2>/dev/null || printf '%s' "$resp")"
+    if have jq && [ -n "$POD_ENV_JSON" ]; then
+      local secret
+      while IFS= read -r secret; do
+        [ -n "$secret" ] && reason="${reason//"$secret"/<redacted>}"
+      done < <(printf '%s' "$POD_ENV_JSON" | jq -r 'to_entries[].value | tostring' 2>/dev/null)
+    fi
+    die "pod create failed (curl exit ${create_rc}): $(printf '%s' "$reason" | head -c 400)"
+  fi
   id="$(printf '%s' "$resp" | jq -r '.id // .pod.id // empty' 2>/dev/null || true)"
   [ -n "${id:-}" ] || die "create returned no id (verify the REST shape; response withheld to avoid leaking anything)"
   printf '%s' "$id" >"$STATE_FILE"; log "created pod ${id}"
@@ -231,14 +257,28 @@ cmd_pull() { [ "$#" -ge 2 ] || die "usage: rp pull <remote> <local>"; local hp; 
 cmd_relay_get() {
   [ "$#" -ge 1 ] || die "usage: rp relay-get <local-dest-dir>"
   require_key; have runpodctl || die "runpodctl required for relay-get"
-  local id dest podlog code deadline; id="$(current_pod_id)"; dest="$1"; mkdir -p "$dest"
-  podlog="$(mktemp)"; deadline=$(( $(date +%s) + MAX_LIFETIME_SECS )); code=""
+  local id dest podlog savedlog code deadline; id="$(current_pod_id)"; dest="$1"; mkdir -p "$dest"
+  podlog="$(mktemp)"; savedlog="${dest}/pod.log"; deadline=$(( $(date +%s) + MAX_LIFETIME_SECS )); code=""
   log "waiting for the job to publish RP_ARTIFACT_CODE=… in the pod logs"
   while [ "$(date +%s)" -lt "$deadline" ]; do
     RUNPOD_API_KEY="${RUNPOD_API_KEY}" runpodctl pod logs "$id" --source container --tail 5000 --max-wait 5s > "$podlog" 2>&1 || true
+    # A deleted pod takes its logs with it, so (a) keep the latest real capture on disk as we go -- error
+    # replies are JSON lines starting {"error" and must not overwrite it -- and (b) notice the pod is gone
+    # instead of polling a 404 until the full lifetime deadline (2026-09-27/10-15: a job that crashed on the
+    # pod left the driver waiting 40 min for an artifact code that could never arrive, with no logs kept).
+    if [ -s "$podlog" ] && ! grep -q '^{"error"' "$podlog"; then cp "$podlog" "$savedlog"; fi
+    if grep -q '"code":"not_found"' "$podlog"; then
+      rm -f "$podlog"
+      if [ -s "$savedlog" ]; then
+        log "last container log lines before the pod disappeared (full capture: ${savedlog}):"
+        if have jq; then jq -r '.line // empty' "$savedlog" 2>/dev/null | tail -n 40 >&2 || true
+        else tail -n 40 "$savedlog" >&2; fi
+      fi
+      die "pod ${id} is gone (terminated before the job published RP_ARTIFACT_CODE) -- the job most likely failed on the pod"
+    fi
     code="$(grep -oE 'RP_ARTIFACT_CODE=[A-Za-z0-9-]+' "$podlog" | head -1 | cut -d= -f2 || true)"
     [ -n "$code" ] && break
-    sleep 10
+    sleep "${RP_RELAY_POLL_SECS:-5}"
   done
   rm -f "$podlog"
   [ -n "$code" ] || die "no RP_ARTIFACT_CODE in the pod logs within ${MAX_LIFETIME_SECS}s (did the job send + echo it? see data-transport.md)"
