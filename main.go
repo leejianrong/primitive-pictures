@@ -30,6 +30,12 @@ var (
 	Grid       int
 	Jitter     int
 	V, VV      bool
+
+	FramesDir         string
+	FramesOut         string
+	NewShapesPerFrame int
+	DropRate          float64
+	Resume            bool
 )
 
 type flagArray []string
@@ -76,6 +82,11 @@ func init() {
 	flag.IntVar(&Repeat, "rep", 0, "add N extra shapes per iteration with reduced search")
 	flag.IntVar(&Grid, "grid", primitive.DefaultStippleGrid, "stipple mode (9): grid cell size in pixels")
 	flag.IntVar(&Jitter, "jitter", primitive.DefaultStippleJitter, "stipple mode (9): max jitter from grid center, in pixels")
+	flag.StringVar(&FramesDir, "frames", "", "frame-sequence mode: directory of ordered frame images (use with -out, -n)")
+	flag.StringVar(&FramesOut, "out", "", "frame-sequence mode: output directory for per-frame PNG/SVG and frames.json")
+	flag.IntVar(&NewShapesPerFrame, "new-shapes-per-frame", 25, "frame-sequence mode: new shapes added per frame after the first (-n sets the first frame's count); lower = steadier, higher = more flicker")
+	flag.Float64Var(&DropRate, "drop-rate", 0.1, "frame-sequence mode: fraction (0-1) of the previous frame's shapes randomly dropped before adding new ones; shape count settles near new-shapes-per-frame/drop-rate")
+	flag.BoolVar(&Resume, "resume", false, "frame-sequence mode: skip leading frames already written to -out (the next frame restarts cold)")
 	flag.BoolVar(&V, "v", false, "verbose")
 	flag.BoolVar(&VV, "vv", false, "very verbose")
 }
@@ -95,11 +106,30 @@ func main() {
 	// parse and validate arguments
 	flag.Parse()
 	ok := true
-	if Input == "" {
-		ok = errorMessage("ERROR: input argument required")
-	}
-	if len(Outputs) == 0 {
-		ok = errorMessage("ERROR: output argument required")
+	framesMode := FramesDir != ""
+	if framesMode {
+		if FramesOut == "" {
+			ok = errorMessage("ERROR: -out argument required with -frames")
+		}
+		if Input != "" || len(Outputs) > 0 {
+			ok = errorMessage("ERROR: -frames uses -out, not -i/-o")
+		}
+		if len(Configs) > 1 {
+			ok = errorMessage("ERROR: -frames takes a single -n")
+		}
+		if DropRate < 0 || DropRate > 1 {
+			ok = errorMessage("ERROR: -drop-rate must be between 0 and 1")
+		}
+		if NewShapesPerFrame < 0 {
+			ok = errorMessage("ERROR: -new-shapes-per-frame must be >= 0")
+		}
+	} else {
+		if Input == "" {
+			ok = errorMessage("ERROR: input argument required")
+		}
+		if len(Outputs) == 0 {
+			ok = errorMessage("ERROR: output argument required")
+		}
 	}
 	if len(Configs) == 0 {
 		ok = errorMessage("ERROR: number argument required")
@@ -116,6 +146,7 @@ func main() {
 	}
 	if !ok {
 		fmt.Println("Usage: primitive [OPTIONS] -i input -o output -n count")
+		fmt.Println("       primitive [OPTIONS] -frames dir -out dir -n count [-new-shapes-per-frame k]")
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
@@ -131,6 +162,11 @@ func main() {
 	// determine worker count
 	if Workers < 1 {
 		Workers = runtime.NumCPU()
+	}
+
+	if framesMode {
+		check(runFrames(FramesDir, FramesOut, Configs[0].Count, NewShapesPerFrame, DropRate, Resume))
+		return
 	}
 
 	// read input image
