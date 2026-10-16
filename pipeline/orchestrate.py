@@ -33,7 +33,10 @@ from config import (
     DEFAULT_MAX_LIFETIME_SECS,
     DEFAULT_MODEL,
     DEFAULT_POD_IMAGE,
+    DEFAULT_VIDEO_MODEL,
+    DEFAULT_VIDEO_POD_IMAGE,
     resolve_backends,
+    resolve_video_backend,
 )
 
 PIPELINE_DIR = Path(__file__).resolve().parent
@@ -93,6 +96,133 @@ def build_job_cmd(prompts: list[str], model_names: list[str], relay_code_base: s
     return " && ".join(parts)
 
 
+def build_video_job_cmd(
+    prompts: list[str], image_model_name: str, video_model_name: str, relay_code_base: str
+) -> str:
+    """The pod-side command for the video-gen job (SLICES-phase3.md V5):
+    write embedded files, install the video job's own dependencies (separate
+    from the image job's -- see pod-requirements-video.txt), run
+    generate_video.py. Same nothing-fetched-at-boot discipline as
+    build_job_cmd (ADR-0001)."""
+    generate_py = (RUNPOD_DIR / "generate.py").read_text()
+    generate_video_py = (RUNPOD_DIR / "generate_video.py").read_text()
+    config_py = (PIPELINE_DIR / "config.py").read_text()
+    pod_requirements = (RUNPOD_DIR / "pod-requirements-video.txt").read_text()
+    prompts_json = json.dumps(
+        {"prompts": prompts, "image_model": image_model_name, "video_model": video_model_name}
+    )
+
+    parts = [
+        "set -eu",
+        "mkdir -p /workspace",
+        f"echo {_b64(generate_py)} | base64 -d > /workspace/generate.py",
+        f"echo {_b64(generate_video_py)} | base64 -d > /workspace/generate_video.py",
+        f"echo {_b64(config_py)} | base64 -d > /workspace/config.py",
+        f"echo {_b64(pod_requirements)} | base64 -d > /workspace/pod-requirements.txt",
+        f"echo {_b64(prompts_json)} | base64 -d > /workspace/prompts.json",
+        "echo 'pod: installing dependencies'",
+        "pip install -r /workspace/pod-requirements.txt",
+        (
+            "python3 /workspace/generate_video.py --prompts-file /workspace/prompts.json "
+            f"--out-dir /workspace/out --relay-code-base {relay_code_base}"
+        ),
+    ]
+    return " && ".join(parts)
+
+
+def build_video_plan(
+    prompts: list[str],
+    image_model_name: str = DEFAULT_MODEL,
+    video_model_name: str = DEFAULT_VIDEO_MODEL,
+    run_id: str | None = None,
+    max_hourly_usd: float = DEFAULT_MAX_HOURLY_USD,
+    max_lifetime_secs: int = DEFAULT_MAX_LIFETIME_SECS,
+    pod_image: str = DEFAULT_VIDEO_POD_IMAGE,
+    container_disk_gb: int = DEFAULT_CONTAINER_DISK_GB,
+    hf_token: str | None = None,
+) -> LaunchPlan:
+    if not prompts:
+        raise ValueError("no prompts given")
+    resolve_backends(image_model_name)  # raises a clear error on an unknown image model
+    resolve_video_backend(video_model_name)  # same, for the video model
+
+    run_id = run_id or time.strftime("run-%Y%m%d-%H%M%S", time.gmtime())
+    relay_code_base = f"ppics-video-{run_id}"
+    job_cmd = build_video_job_cmd(prompts, image_model_name, video_model_name, relay_code_base)
+
+    env_overrides = {
+        "RP_POD_NAME": f"ppics-video-{run_id}",
+        "RP_POD_IMAGE": pod_image,
+        "RP_JOB_CMD": job_cmd,
+        "RP_COMPUTE_TYPE": "GPU",
+        "RP_MAX_HOURLY_USD": str(max_hourly_usd),
+        "RP_MAX_LIFETIME_SECS": str(max_lifetime_secs),
+        "RP_CONTAINER_DISK_GB": str(container_disk_gb),
+        "RP_STATE_FILE": str(RUNS_DIR / run_id / ".rp-state"),
+    }
+    if hf_token:
+        env_overrides["RP_POD_ENV_JSON"] = json.dumps({"HF_TOKEN": hf_token})
+    return LaunchPlan(
+        run_id=run_id,
+        prompts=prompts,
+        model_names=[image_model_name, video_model_name],
+        job_cmd=job_cmd,
+        env_overrides=env_overrides,
+        run_dir=RUNS_DIR / run_id,
+    )
+
+
+def execute_video(plan: LaunchPlan, base_env: dict[str, str]) -> int:
+    """Run the video-gen plan for real: up -> relay-get -> unpack, always
+    down in finally. Unlike execute() (the image path), this does NOT invoke
+    `primitive` -- V5 only proves the RunPod mechanism and gets frames onto
+    disk; running primitive over them is V6/V7's job."""
+    plan.run_dir.mkdir(parents=True, exist_ok=True)
+    env = {**base_env, **plan.env_overrides}
+
+    up = _run_launcher(["up"], env)
+    print(up.stderr, file=sys.stderr)
+    if up.returncode != 0:
+        print("orchestrate: launch.sh up failed, nothing to tear down", file=sys.stderr)
+        return 1
+    pod_id = up.stdout.strip()
+    print(f"orchestrate: pod {pod_id} up, run_id={plan.run_id}")
+
+    try:
+        if not _wait_for_boot(env):
+            print(
+                f"orchestrate: no log output from pod {pod_id} within "
+                f"{DEFAULT_BOOT_TIMEOUT_SECS}s of creation -- likely failed to boot "
+                "(stuck image pull, host provisioning issue)",
+                file=sys.stderr,
+            )
+            return 1
+
+        pulled = _run_launcher(["relay-get", str(plan.run_dir)], env)
+        print(pulled.stderr, file=sys.stderr)
+        if pulled.returncode != 0:
+            print("orchestrate: relay-get failed", file=sys.stderr)
+            return 1
+
+        archive = plan.run_dir / "ppics-output.tar.gz"
+        if not archive.exists():
+            print(f"orchestrate: expected archive not found at {archive}", file=sys.stderr)
+            return 1
+        with tarfile.open(archive) as tar:
+            tar.extractall(plan.run_dir, filter="data")
+        print(f"orchestrate: unpacked into {plan.run_dir / 'out'}")
+
+        pod_manifest_path = plan.run_dir / "out" / "generation-manifest.json"
+        rows = json.loads(pod_manifest_path.read_text())
+        ok = sum(1 for row in rows if not row.get("error"))
+        failed = len(rows) - ok
+        print(f"orchestrate: {ok} ok, {failed} failed -> {pod_manifest_path}")
+        return 1 if ok == 0 else 0
+    finally:
+        down = _run_launcher(["down"], env)
+        print(down.stderr, file=sys.stderr)
+
+
 def build_plan(
     prompts: list[str],
     model_selection: str,
@@ -150,6 +280,59 @@ def _run_launcher(args: list[str], env: dict[str, str]) -> subprocess.CompletedP
         capture_output=True,
         text=True,
     )
+
+
+DEFAULT_BOOT_TIMEOUT_SECS = 180
+DEFAULT_BOOT_POLL_INTERVAL_SECS = 15
+
+
+def _wait_for_boot(
+    env: dict[str, str],
+    timeout_secs: int = DEFAULT_BOOT_TIMEOUT_SECS,
+    poll_interval_secs: int = DEFAULT_BOOT_POLL_INTERVAL_SECS,
+    sleep=time.sleep,
+) -> bool:
+    """Poll `launch.sh logs` until the pod produces ANY log output, or
+    timeout_secs elapses with none.
+
+    A silent pod this long means the container itself never started (a
+    stuck image pull, a host provisioning issue) -- distinct from the job
+    legitimately running long once it *has* started, which relay-get's own
+    much longer deadline (RP_MAX_LIFETIME_SECS) already covers. Without
+    this, the only way to notice a stuck boot is the full job deadline, or
+    a human manually polling `pod list`/`pod logs` -- which is exactly what
+    caught a real ~20-minute stuck `awaiting_container` pod during
+    SLICES-phase3.md V5's validation run (see ADR-0001's addendum).
+
+    Prints a heartbeat each poll (the wait was previously silent start to
+    finish -- indistinguishable from a hang while it was happening) and, on
+    timeout, the pod's `system`-source logs (RunPod's own platform
+    narration -- image pull progress, container create/start -- separate
+    from the job's own `container`-source output) so a stuck pull is
+    visible in the failure itself instead of a bare "no output" message.
+    """
+    start = time.time()
+    deadline = start + timeout_secs
+    while time.time() < deadline:
+        result = _run_launcher(["logs"], env)
+        if result.stdout.strip():
+            return True
+        elapsed = int(time.time() - start)
+        print(
+            f"orchestrate: waiting for pod boot... {elapsed}s elapsed, no output yet",
+            file=sys.stderr,
+        )
+        sleep(poll_interval_secs)
+
+    diagnostic = _run_launcher(["logs", "--source", "system", "--tail", "50"], env)
+    print(
+        "orchestrate: no output within the boot timeout -- platform (system-source) logs:",
+        file=sys.stderr,
+    )
+    print(diagnostic.stdout.strip() or "(no system-source log lines either)", file=sys.stderr)
+    if diagnostic.stderr:
+        print(diagnostic.stderr, file=sys.stderr)
+    return False
 
 
 def resolve_primitive_bin(explicit: str | None) -> Path:
@@ -256,6 +439,15 @@ def execute(
     print(f"orchestrate: pod {pod_id} up, run_id={plan.run_id}")
 
     try:
+        if not _wait_for_boot(env):
+            print(
+                f"orchestrate: no log output from pod {pod_id} within "
+                f"{DEFAULT_BOOT_TIMEOUT_SECS}s of creation -- likely failed to boot "
+                "(stuck image pull, host provisioning issue)",
+                file=sys.stderr,
+            )
+            return 1
+
         pulled = _run_launcher(["relay-get", str(plan.run_dir)], env)
         print(pulled.stderr, file=sys.stderr)
         if pulled.returncode != 0:
@@ -334,7 +526,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--max-hourly-usd", type=float, default=DEFAULT_MAX_HOURLY_USD)
     parser.add_argument("--max-lifetime-secs", type=int, default=DEFAULT_MAX_LIFETIME_SECS)
-    parser.add_argument("--pod-image", default=DEFAULT_POD_IMAGE)
+    parser.add_argument(
+        "--pod-image",
+        help=(
+            f"pod container image (default: {DEFAULT_POD_IMAGE}, or "
+            f"{DEFAULT_VIDEO_POD_IMAGE} with --video, which needs torch >= 2.5)"
+        ),
+    )
     parser.add_argument(
         "--container-disk-gb",
         type=int,
@@ -348,6 +546,21 @@ def main(argv: list[str] | None = None) -> int:
         "--dry-run",
         action="store_true",
         help="build and print the launch plan (job command, env) without spending anything",
+    )
+    parser.add_argument(
+        "--video",
+        action="store_true",
+        help=(
+            "video-gen mode (SLICES-phase3.md V5): --model generates a still per "
+            "prompt, --video-model animates it (I2V), frames land under "
+            "runs/<run_id>/out/. Does not invoke `primitive` -- see --process-only "
+            "for that once V6/V7 land"
+        ),
+    )
+    parser.add_argument(
+        "--video-model",
+        default=DEFAULT_VIDEO_MODEL,
+        help=f"video backend name (default: {DEFAULT_VIDEO_MODEL})",
     )
     parser.add_argument(
         "--shape-count",
@@ -388,15 +601,27 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if m.ok_count == 0 else 0
 
     prompts = resolve_prompts(args)
-    plan = build_plan(
-        prompts,
-        args.model,
-        max_hourly_usd=args.max_hourly_usd,
-        max_lifetime_secs=args.max_lifetime_secs,
-        pod_image=args.pod_image,
-        container_disk_gb=args.container_disk_gb,
-        hf_token=os.environ.get("HF_TOKEN"),
-    )
+    if args.video:
+        plan = build_video_plan(
+            prompts,
+            args.model,
+            args.video_model,
+            max_hourly_usd=args.max_hourly_usd,
+            max_lifetime_secs=args.max_lifetime_secs,
+            pod_image=args.pod_image or DEFAULT_VIDEO_POD_IMAGE,
+            container_disk_gb=args.container_disk_gb,
+            hf_token=os.environ.get("HF_TOKEN"),
+        )
+    else:
+        plan = build_plan(
+            prompts,
+            args.model,
+            max_hourly_usd=args.max_hourly_usd,
+            max_lifetime_secs=args.max_lifetime_secs,
+            pod_image=args.pod_image or DEFAULT_POD_IMAGE,
+            container_disk_gb=args.container_disk_gb,
+            hf_token=os.environ.get("HF_TOKEN"),
+        )
 
     # Writing the resolved prompt set to disk is free (no RunPod/network
     # involved) and is what makes a bank-sampled run reproducible/inspectable
@@ -423,6 +648,9 @@ def main(argv: list[str] | None = None) -> int:
         print("--- RP_JOB_CMD ---")
         print(plan.job_cmd)
         return 0
+
+    if args.video:
+        return execute_video(plan, dict(os.environ))
 
     primitive_bin = resolve_primitive_bin(args.primitive_bin)
 

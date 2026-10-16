@@ -50,6 +50,16 @@ Run `make` with no target for the full list. The important ones:
 - `make python-check` — lint + format-check `pipeline/` (ruff, via `uv`)
 - `make python-test` — `pipeline/`'s fast tests (no RunPod/network involved)
 - `make ci` — everything CI runs, in one shot
+- `bin/primitive -frames DIR -out DIR -n N -new-shapes-per-frame K -drop-rate R [-resume]` —
+  frame-sequence mode: one process over an ordered frame directory, each frame seeded from the
+  previous one's shapes (ADR-0007/0009); writes per-frame PNG/SVG + `frames.json`, prints a
+  continuity summary (ADR-0010). Use dynamic settings (drop about 30%, add about 30% of N).
+- `scripts/sweep.py FRAMES OUT [--fps 8] name:N:ADD:DROP ...` — render a frame dir under several
+  settings and stitch slowed side-by-side mp4s for review (needs `bin/primitive` and ffmpeg).
+
+Before any paid *video* launch, run `pipeline/runpod/offline_video_smoke.py` (setup is in
+its docstring): it runs the pod-side video path on CPU with a tiny random model, and found
+bugs that cost a pod launch each (missing package, wrong frame type).
 
 `pipeline/orchestrate.py --dry-run` builds and prints the full RunPod launch
 plan (the embedded job command, env overrides) without spending anything —
