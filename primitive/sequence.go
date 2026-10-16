@@ -42,7 +42,11 @@ type FrameResult struct {
 	Carried int // shapes inherited unchanged from the previous frame (after drops)
 	Dropped int // previous-frame shapes discarded before searching
 	Added   int // shapes newly searched for this frame
-	Elapsed time.Duration
+
+	// Continuity is MeasureContinuity(previous frame, this frame); for the
+	// first frame processed, everything is Added.
+	Continuity Continuity
+	Elapsed    time.Duration
 }
 
 // ProcessSequence runs frames [0, count) in order. load(i) returns frame i's
@@ -90,7 +94,11 @@ func ProcessSequence(count int, load func(i int) (image.Image, error), cfg Seque
 		for j := 0; j < budget; j++ {
 			model.Step(cfg.ShapeType, cfg.Alpha, cfg.Repeat)
 		}
-		res := FrameResult{Index: i, Model: model, Carried: carried, Dropped: dropped, Added: len(model.Shapes) - carried, Elapsed: time.Since(start)}
+		var prevShapes []Shape
+		if prev != nil {
+			prevShapes = prev.Shapes
+		}
+		res := FrameResult{Continuity: MeasureContinuity(prevShapes, model.Shapes), Index: i, Model: model, Carried: carried, Dropped: dropped, Added: len(model.Shapes) - carried, Elapsed: time.Since(start)}
 		if err := onFrame(res); err != nil {
 			return err
 		}
@@ -133,7 +141,9 @@ func newModelFromSubset(prev *Model, target image.Image, keep []int) (*Model, er
 	model.Sw, model.Sh, model.Scale = prev.Sw, prev.Sh, prev.Scale
 	model.Context = model.newContext()
 	for _, i := range keep {
-		shape := prev.Shapes[i].Copy()
+		// Shared, not copied: committed shapes are immutable, and keeping the
+		// same value is what lets MeasureContinuity recognise a carried shape.
+		shape := prev.Shapes[i]
 		color := prev.Colors[i]
 		before := copyRGBA(model.Current)
 		lines := shape.Rasterize()
