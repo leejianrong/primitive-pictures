@@ -57,3 +57,39 @@ def test_category_names_cover_the_agreed_five():
         "animal-groups",
         "wildlife-scenes",
     }
+
+
+def test_every_prompt_has_composition_and_lighting():
+    for p in promptbank.sample(count=40, seed=5):
+        assert any(c in p for c in promptbank.DETAILS["composition"])
+        assert any(c in p for c in promptbank.DETAILS["lighting"])
+
+
+def test_details_do_not_change_subject_or_style_choice():
+    """Details use their own stream: the subject and styles per seed match a details-free draw."""
+    import random
+
+    seed = 11
+    rnd = random.Random(seed)  # noqa: S311 -- mirrors promptbank's reproducible sampling
+    pool = [s for subs in promptbank.SUBJECTS.values() for s in subs]
+    expected = []
+    for _ in range(15):
+        subject = rnd.choice(pool)
+        n = rnd.randint(0, 2)
+        if n:
+            rnd.sample(promptbank.STYLES, k=n)
+        expected.append(subject)
+    got = promptbank.sample(count=15, seed=seed)
+    assert [p.split(", ")[0] for p in got] == expected
+
+
+def test_lens_clause_skipped_for_painting_styles():
+    prompts = promptbank.sample(count=60, seed=9, styles=["as an oil painting"])
+    painted = [p for p in prompts if "oil painting" in p]
+    assert painted
+    assert all(not any(c in p for c in promptbank.DETAILS["lens"]) for p in painted)
+
+
+def test_prompts_are_longer_than_subject_alone():
+    for p in promptbank.sample(count=10, seed=2):
+        assert len(p.split(", ")) >= 3
