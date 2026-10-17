@@ -342,6 +342,42 @@ def test_run_launcher_argv_shape():
     assert kwargs.get("shell", False) is False
 
 
+def test_run_launcher_timeouts_per_subcommand():
+    """up/down/logs get a timeout; relay-get is long by design and gets none."""
+    with patch.object(subprocess, "run") as mock_run:
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+        for sub in ("up", "down", "logs"):
+            orchestrate._run_launcher([sub], {})
+            assert mock_run.call_args.kwargs["timeout"] == orchestrate.LAUNCHER_TIMEOUT_SECS[sub]
+        orchestrate._run_launcher(["relay-get", "dir"], {})
+        assert mock_run.call_args.kwargs["timeout"] is None
+
+
+def test_run_launcher_timeout_becomes_failed_result():
+    err = subprocess.TimeoutExpired(cmd=["bash"], timeout=1, stderr=b"partial")
+    with patch.object(subprocess, "run", side_effect=err):
+        result = orchestrate._run_launcher(["down"], {})
+    assert result.returncode == orchestrate.LAUNCHER_TIMEOUT_RETURNCODE
+    assert "partial" in result.stderr and "timed out" in result.stderr
+
+
+@pytest.mark.parametrize("fn_name", ["execute", "execute_video"])
+def test_execute_attempts_down_when_up_times_out(tmp_path, monkeypatch, fn_name):
+    monkeypatch.setattr(orchestrate, "RUNS_DIR", tmp_path / "runs")
+    plan = orchestrate.build_plan(["a prompt"], "sd15", run_id="run-test-timeout")
+    calls = []
+
+    def fake_run_launcher(args, env):
+        calls.append(args)
+        rc = orchestrate.LAUNCHER_TIMEOUT_RETURNCODE if args == ["up"] else 0
+        return subprocess.CompletedProcess(args=[], returncode=rc, stdout="", stderr="")
+
+    with patch.object(orchestrate, "_run_launcher", side_effect=fake_run_launcher):
+        rc = getattr(orchestrate, fn_name)(plan, base_env={}, primitive_bin=Path("/bin/true"))
+    assert rc == 1
+    assert calls == [["up"], ["down"]]
+
+
 def test_execute_always_tears_down_even_if_relay_get_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrate, "RUNS_DIR", tmp_path / "runs")
     plan = orchestrate.build_plan(["a prompt"], "sd15", run_id="run-test-0002")

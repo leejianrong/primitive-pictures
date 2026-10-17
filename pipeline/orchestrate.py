@@ -363,7 +363,13 @@ def execute_video(
     up = _run_launcher(["up"], env)
     print(up.stderr, file=sys.stderr)
     if up.returncode != 0:
-        print("orchestrate: launch.sh up failed, nothing to tear down", file=sys.stderr)
+        if up.returncode == LAUNCHER_TIMEOUT_RETURNCODE:
+            print(
+                "orchestrate: launch.sh up timed out, tearing down any pod it made", file=sys.stderr
+            )
+            _teardown_after_failed_up(env)
+        else:
+            print("orchestrate: launch.sh up failed, nothing to tear down", file=sys.stderr)
         return 1
     pod_id = up.stdout.strip()
     print(f"orchestrate: pod {pod_id} up, run_id={plan.run_id}")
@@ -449,15 +455,49 @@ def build_plan(
     )
 
 
+# Python-side ceilings on the short launcher subcommands -- defense in depth behind launch.sh's own
+# curl --connect-timeout/--max-time (ADR-0001, 2026-09-27 incident). Each is sized above the worst
+# case of the curl calls the subcommand makes in sequence (30s apiece): `up` creates and checks a
+# pod, `down` looks the pod up, deletes it and verifies. `relay-get` is deliberately absent: it
+# waits for the whole job and is long by design.
+LAUNCHER_TIMEOUT_SECS: dict[str, int] = {"up": 180, "down": 150, "logs": 60}
+LAUNCHER_TIMEOUT_RETURNCODE = 124  # same as timeout(1)
+
+
 def _run_launcher(args: list[str], env: dict[str, str]) -> subprocess.CompletedProcess:
-    """Argv-list only -- never shell=True (ADR-0002)."""
-    return subprocess.run(
-        ["bash", str(RUNPOD_DIR / "launch.sh"), *args],
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    """Argv-list only -- never shell=True (ADR-0002).
+
+    Short subcommands get a timeout; on expiry this returns a CompletedProcess with returncode
+    LAUNCHER_TIMEOUT_RETURNCODE instead of raising, so callers' existing failure paths (and the
+    `finally: down`) handle it unchanged.
+    """
+    timeout = LAUNCHER_TIMEOUT_SECS.get(args[0]) if args else None
+    try:
+        return subprocess.run(
+            ["bash", str(RUNPOD_DIR / "launch.sh"), *args],
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        partial = (
+            exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else exc.stderr
+        )
+        return subprocess.CompletedProcess(
+            args=exc.cmd,
+            returncode=LAUNCHER_TIMEOUT_RETURNCODE,
+            stdout="",
+            stderr=f"{partial or ''}\norchestrate: launch.sh {args[0]} timed out after {timeout}s",
+        )
+
+
+def _teardown_after_failed_up(env: dict[str, str]) -> None:
+    """`up` timed out. A pod may have been created just before the stall with its id never
+    returned. `down` finds the pod by name and is idempotent, so attempt it."""
+    down = _run_launcher(["down"], env)
+    print(down.stderr, file=sys.stderr)
 
 
 DEFAULT_BOOT_TIMEOUT_SECS = 180
@@ -611,7 +651,13 @@ def execute(
     up = _run_launcher(["up"], env)
     print(up.stderr, file=sys.stderr)
     if up.returncode != 0:
-        print("orchestrate: launch.sh up failed, nothing to tear down", file=sys.stderr)
+        if up.returncode == LAUNCHER_TIMEOUT_RETURNCODE:
+            print(
+                "orchestrate: launch.sh up timed out, tearing down any pod it made", file=sys.stderr
+            )
+            _teardown_after_failed_up(env)
+        else:
+            print("orchestrate: launch.sh up failed, nothing to tear down", file=sys.stderr)
         return 1
     pod_id = up.stdout.strip()
     print(f"orchestrate: pod {pod_id} up, run_id={plan.run_id}")
