@@ -83,6 +83,9 @@ func writeManifest(out string, items []frameItem) error {
 // runFrames is the --frames mode: one in-process pass over the whole
 // sequence (ADR-0007), writing each frame's SVG then PNG as it completes.
 func runFrames(framesDir, out string, initial, perFrame int, dropRate float64, resume bool) error {
+	if perFrame < 0 { // default: replace exactly what the drop rate removes, so the count holds steady
+		perFrame = int(dropRate*float64(initial) + 0.5)
+	}
 	paths, err := listFrames(framesDir)
 	if err != nil {
 		return err

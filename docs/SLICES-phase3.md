@@ -157,6 +157,17 @@ unchanged; only the driving loop (step 2) would move.
 
 ## V7: Pipeline wiring for the video-run manifest
 
+**Status: ✅ built 2026-10-17.** `orchestrate.py --video` now runs
+`primitive -frames` once per clip after the pull and writes a schema-2
+`manifest.json` (`manifest.VideoManifest`: clips with nested `FrameItem`s,
+per-clip mean carried fraction, the settings used, relative paths). A slowed
+preview `primitive.mp4` is exported with ffmpeg (`--playback-fps`, default 8; a
+failed preview is a warning, not a failed clip). `--video --process-only RUN_DIR`
+re-runs just that step with no RunPod. Video runs default to dynamic settings
+(`--shape-count 500`, `--drop-rate 0.3`, new shapes = drop-rate x count). One
+clip's failure doesn't stop the others, and frames finished before a crash stay in
+the manifest. Verified on one real 81-frame clip (200 shapes, about 4.5 min).
+
 **Delivers:** R0 (fully), R3 (fully)
 
 **Build plan**

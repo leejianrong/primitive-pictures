@@ -84,8 +84,8 @@ func init() {
 	flag.IntVar(&Jitter, "jitter", primitive.DefaultStippleJitter, "stipple mode (9): max jitter from grid center, in pixels")
 	flag.StringVar(&FramesDir, "frames", "", "frame-sequence mode: directory of ordered frame images (use with -out, -n)")
 	flag.StringVar(&FramesOut, "out", "", "frame-sequence mode: output directory for per-frame PNG/SVG and frames.json")
-	flag.IntVar(&NewShapesPerFrame, "new-shapes-per-frame", 25, "frame-sequence mode: new shapes added per frame after the first (-n sets the first frame's count); lower = steadier, higher = more flicker")
-	flag.Float64Var(&DropRate, "drop-rate", 0.1, "frame-sequence mode: fraction (0-1) of the previous frame's shapes randomly dropped before adding new ones; shape count settles near new-shapes-per-frame/drop-rate")
+	flag.IntVar(&NewShapesPerFrame, "new-shapes-per-frame", -1, "frame-sequence mode: new shapes added per frame after the first (-n sets the first frame's count); default -1 = drop-rate x n, which holds the shape count steady")
+	flag.Float64Var(&DropRate, "drop-rate", 0.3, "frame-sequence mode: fraction (0-1) of the previous frame's shapes randomly dropped before adding new ones (higher = more dynamic); shape count settles near new-shapes-per-frame/drop-rate")
 	flag.BoolVar(&Resume, "resume", false, "frame-sequence mode: skip leading frames already written to -out (the next frame restarts cold)")
 	flag.BoolVar(&V, "v", false, "verbose")
 	flag.BoolVar(&VV, "vv", false, "very verbose")
@@ -120,8 +120,8 @@ func main() {
 		if DropRate < 0 || DropRate > 1 {
 			ok = errorMessage("ERROR: -drop-rate must be between 0 and 1")
 		}
-		if NewShapesPerFrame < 0 {
-			ok = errorMessage("ERROR: -new-shapes-per-frame must be >= 0")
+		if NewShapesPerFrame < -1 {
+			ok = errorMessage("ERROR: -new-shapes-per-frame must be >= 0 (or -1 for the default)")
 		}
 	} else {
 		if Input == "" {

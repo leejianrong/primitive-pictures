@@ -137,7 +137,7 @@ def test_execute_video_always_tears_down_even_if_relay_get_fails(tmp_path, monke
         raise AssertionError(f"unexpected launcher subcommand {args}")
 
     with patch.object(orchestrate, "_run_launcher", side_effect=fake_run_launcher):
-        rc = orchestrate.execute_video(plan, base_env={})
+        rc = orchestrate.execute_video(plan, base_env={}, primitive_bin=Path("/bin/true"))
 
     assert rc == 1
     # down MUST run even though relay-get failed, and the boot check must
@@ -145,7 +145,7 @@ def test_execute_video_always_tears_down_even_if_relay_get_fails(tmp_path, monke
     assert calls == ["up", "logs", "relay-get", "down"]
 
 
-def test_execute_video_counts_ok_and_failed_rows(tmp_path, monkeypatch):
+def test_execute_video_runs_primitive_after_pull_and_returns_its_outcome(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrate, "RUNS_DIR", tmp_path / "runs")
     plan = orchestrate.build_video_plan(
         ["a prompt", "another"], "flux-schnell", "wan2.2-ti2v-5b", run_id="run-test-0006"
@@ -180,14 +180,27 @@ def test_execute_video_counts_ok_and_failed_rows(tmp_path, monkeypatch):
             return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
+    processed = manifest.VideoManifest(
+        run_id="run-test-0006",
+        items=[
+            manifest.VideoItem(
+                index=0, prompt="a prompt", image_model="f", video_model="w", status="ok"
+            ),
+            manifest.VideoItem(
+                index=1, prompt="another", image_model="f", video_model="w", status="failed"
+            ),
+        ],
+    )
     with (
         patch.object(orchestrate, "_run_launcher", side_effect=fake_run_launcher),
         patch.object(orchestrate.tarfile, "open"),
+        patch.object(orchestrate, "process_video_run", return_value=processed) as proc,
     ):
-        rc = orchestrate.execute_video(plan, base_env={})
+        rc = orchestrate.execute_video(plan, base_env={}, primitive_bin=Path("/bin/true"))
 
     assert rc == 0
     assert results == {"up": 1, "logs": 1, "relay-get": 1, "down": 1}
+    proc.assert_called_once()  # the local primitive step runs after the pull, once per run
 
 
 def test_build_plan_rejects_empty_prompts():

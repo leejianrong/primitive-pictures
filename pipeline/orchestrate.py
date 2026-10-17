@@ -16,6 +16,7 @@ import argparse
 import base64
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -45,6 +46,12 @@ REPO_ROOT = PIPELINE_DIR.parent
 RUNS_DIR = REPO_ROOT / "runs"
 DEFAULT_PRIMITIVE_BIN = REPO_ROOT / "bin" / "primitive"
 DEFAULT_SHAPE_COUNT = 100
+# Video runs default to "dynamic" frame-sequence settings (reviewed 2026-10-16: a 30% drop
+# looks better than 10%; 200 shapes read as abstract/jittery, 500 as cleaner). Starting
+# points, not decisions -- see the sweeps in docs/SLICES-phase3.md V6.
+DEFAULT_VIDEO_SHAPE_COUNT = 500
+DEFAULT_DROP_RATE = 0.3
+DEFAULT_PLAYBACK_FPS = 8  # generation is 24 fps; slower playback reads better for this look
 
 
 @dataclass
@@ -172,11 +179,184 @@ def build_video_plan(
     )
 
 
-def execute_video(plan: LaunchPlan, base_env: dict[str, str]) -> int:
-    """Run the video-gen plan for real: up -> relay-get -> unpack, always
-    down in finally. Unlike execute() (the image path), this does NOT invoke
-    `primitive` -- V5 only proves the RunPod mechanism and gets frames onto
-    disk; running primitive over them is V6/V7's job."""
+@dataclass(frozen=True)
+class VideoSettings:
+    """How `primitive -frames` is run over each clip (ADR-0007/0009). The new-shapes
+    budget defaults to drop_rate * shape_count, which holds the shape count steady."""
+
+    shape_count: int = DEFAULT_VIDEO_SHAPE_COUNT
+    shape_mode: int | None = None
+    drop_rate: float = DEFAULT_DROP_RATE
+    new_shapes: int | None = None
+    playback_fps: int = DEFAULT_PLAYBACK_FPS
+
+    @property
+    def new_shapes_per_frame(self) -> int:
+        if self.new_shapes is not None:
+            return self.new_shapes
+        return round(self.drop_rate * self.shape_count)
+
+    def as_dict(self) -> dict:
+        return {
+            "shape_count": self.shape_count,
+            "shape_mode": self.shape_mode,
+            "drop_rate": self.drop_rate,
+            "new_shapes_per_frame": self.new_shapes_per_frame,
+            "playback_fps": self.playback_fps,
+        }
+
+
+def _run_rel(run_dir: Path, path: str) -> str:
+    """A path primitive reported (absolute, as we passed it) -> relative to the run dir."""
+    p = Path(path)
+    try:
+        return str(p.relative_to(run_dir)) if p.is_absolute() else str(p)
+    except ValueError:
+        return str(p)
+
+
+def _read_frame_items(run_dir: Path, frames_json: Path) -> list[manifest.FrameItem]:
+    if not frames_json.exists():
+        return []
+    try:
+        rows = json.loads(frames_json.read_text())
+    except json.JSONDecodeError:
+        return []
+    return [
+        manifest.FrameItem(
+            index=r["index"],
+            source=_run_rel(run_dir, r["source"]),
+            status=r["status"],
+            output=_run_rel(run_dir, r["output"]),
+            shapes=r.get("shapes", 0),
+            carried=r.get("carried", 0),
+            dropped=r.get("dropped", 0),
+            added=r.get("added", 0),
+            carried_fraction=r.get("carried_fraction", 0.0),
+            added_fraction=r.get("added_fraction", 0.0),
+            seconds=r.get("seconds", 0.0),
+        )
+        for r in rows
+    ]
+
+
+def _encode_preview(
+    ffmpeg_bin: str, frames_dir: Path, out: Path, fps: int
+) -> subprocess.CompletedProcess:
+    # pad: primitive's output height can be odd, which libx264 rejects.
+    cmd = [
+        ffmpeg_bin, "-y", "-loglevel", "error",
+        "-framerate", str(fps), "-i", str(frames_dir / "%04d.png"),
+        "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2:0:0:white",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", str(out),
+    ]  # fmt: skip
+    return subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+
+def process_video_run(
+    run_dir: Path,
+    primitive_bin: Path,
+    settings: VideoSettings | None = None,
+    ffmpeg_bin: str | None = None,
+) -> manifest.VideoManifest:
+    """Run `primitive -frames` once per clip over the pod's generated frames, export a
+    slowed preview mp4 of the result, and write runs/<run_id>/manifest.json (schema 2).
+
+    One subprocess per clip, not per frame (ADR-0007): each frame's shapes seed the next.
+    A clip's failure doesn't abort the rest, and frames finished before it are kept in the
+    manifest, since primitive writes them incrementally.
+    """
+    settings = settings or VideoSettings()
+    ffmpeg_bin = ffmpeg_bin or shutil.which("ffmpeg")
+    rows = json.loads((run_dir / "out" / "generation-manifest.json").read_text())
+
+    items: list[manifest.VideoItem] = []
+    for i, row in enumerate(rows):
+        common = {
+            "index": i,
+            "prompt": row["prompt"],
+            "image_model": row.get("image_model", ""),
+            "video_model": row.get("video_model", ""),
+            "generation_seconds": row.get("seconds"),
+            "settings": settings.as_dict(),
+        }
+        frame_files = row.get("frame_files") or []
+        if row.get("error") or not frame_files:
+            # Pod-side failure: no frames to process. Carry the pod's own error through.
+            items.append(
+                manifest.VideoItem(
+                    **common,
+                    status="failed",
+                    error=row.get("error") or "pod produced no frames",
+                )
+            )
+            continue
+
+        item_rel = Path(frame_files[0]).parent.parent
+        frames_dir = run_dir / "out" / item_rel / "frames"
+        out_dir = run_dir / "out" / item_rel / "primitive"
+        common["still"] = f"out/{row['still_file']}" if row.get("still_file") else None
+        common["source_clip"] = f"out/{row['clip_file']}" if row.get("clip_file") else None
+        common["primitive_dir"] = f"out/{item_rel}/primitive"
+
+        cmd = [
+            str(primitive_bin),
+            "-frames", str(frames_dir),
+            "-out", str(out_dir),
+            "-n", str(settings.shape_count),
+            "-new-shapes-per-frame", str(settings.new_shapes_per_frame),
+            "-drop-rate", str(settings.drop_rate),
+        ]  # fmt: skip
+        if settings.shape_mode is not None:
+            cmd += ["-m", str(settings.shape_mode)]
+
+        started = time.monotonic()
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        common["primitive_seconds"] = round(time.monotonic() - started, 2)
+        frames = _read_frame_items(run_dir, out_dir / "frames.json")
+        warm = [f.carried_fraction for f in frames if f.status == "ok" and f.carried > 0]
+        common["frames"] = frames
+        common["mean_carried_fraction"] = sum(warm) / len(warm) if warm else None
+
+        complete = result.returncode == 0 and len(frames) == len(frame_files)
+        if not complete:
+            reason = (result.stderr or result.stdout or "").strip()[-500:]
+            if result.returncode == 0:
+                reason = f"primitive wrote {len(frames)} of {len(frame_files)} frames"
+            items.append(
+                manifest.VideoItem(**common, status="failed", error=reason or "primitive failed")
+            )
+            continue
+
+        warning = None
+        clip_rel = None
+        if ffmpeg_bin is None:
+            warning = "ffmpeg not found; no preview mp4"
+        else:
+            clip_path = out_dir.parent / "primitive.mp4"
+            enc = _encode_preview(ffmpeg_bin, out_dir, clip_path, settings.playback_fps)
+            if enc.returncode == 0:
+                clip_rel = f"out/{item_rel}/primitive.mp4"
+            else:
+                warning = f"preview mp4 failed: {(enc.stderr or '').strip()[-300:]}"
+        items.append(
+            manifest.VideoItem(**common, status="ok", primitive_clip=clip_rel, warning=warning)
+        )
+
+    m = manifest.VideoManifest(run_id=run_dir.name, items=items)
+    manifest.write_video(run_dir / "manifest.json", m)
+    return m
+
+
+def execute_video(
+    plan: LaunchPlan,
+    base_env: dict[str, str],
+    primitive_bin: Path,
+    settings: VideoSettings | None = None,
+) -> int:
+    """Run the video-gen plan for real: up -> relay-get -> unpack -> primitive
+    over each clip's frames -> manifest, always down in finally. The pod is torn
+    down in `finally` whatever happens after it, and primitive runs locally."""
     plan.run_dir.mkdir(parents=True, exist_ok=True)
     env = {**base_env, **plan.env_overrides}
 
@@ -212,12 +392,10 @@ def execute_video(plan: LaunchPlan, base_env: dict[str, str]) -> int:
             tar.extractall(plan.run_dir, filter="data")
         print(f"orchestrate: unpacked into {plan.run_dir / 'out'}")
 
-        pod_manifest_path = plan.run_dir / "out" / "generation-manifest.json"
-        rows = json.loads(pod_manifest_path.read_text())
-        ok = sum(1 for row in rows if not row.get("error"))
-        failed = len(rows) - ok
-        print(f"orchestrate: {ok} ok, {failed} failed -> {pod_manifest_path}")
-        return 1 if ok == 0 else 0
+        m = process_video_run(plan.run_dir, primitive_bin, settings)
+        manifest_path = plan.run_dir / "manifest.json"
+        print(f"orchestrate: {m.ok_count} ok, {m.failed_count} failed -> {manifest_path}")
+        return 1 if m.ok_count == 0 else 0
     finally:
         down = _run_launcher(["down"], env)
         print(down.stderr, file=sys.stderr)
@@ -553,8 +731,8 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "video-gen mode (SLICES-phase3.md V5): --model generates a still per "
             "prompt, --video-model animates it (I2V), frames land under "
-            "runs/<run_id>/out/. Does not invoke `primitive` -- see --process-only "
-            "for that once V6/V7 land"
+            "runs/<run_id>/out/, then `primitive -frames` runs over each clip and a "
+            "slowed preview mp4 is written next to it (see --playback-fps)"
         ),
     )
     parser.add_argument(
@@ -565,8 +743,33 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--shape-count",
         type=int,
-        default=DEFAULT_SHAPE_COUNT,
-        help=f"shapes per primitive run (default {DEFAULT_SHAPE_COUNT})",
+        help=(
+            f"shapes per primitive run (default {DEFAULT_SHAPE_COUNT}; "
+            f"{DEFAULT_VIDEO_SHAPE_COUNT} with --video, where it is each frame's total)"
+        ),
+    )
+    parser.add_argument(
+        "--drop-rate",
+        type=float,
+        default=DEFAULT_DROP_RATE,
+        help=(
+            "--video: fraction of the previous frame's shapes dropped before new ones "
+            f"are added (default {DEFAULT_DROP_RATE}; higher = more dynamic)"
+        ),
+    )
+    parser.add_argument(
+        "--new-shapes-per-frame",
+        type=int,
+        help=(
+            "--video: new shapes per frame "
+            "(default drop-rate x shape-count, which holds the count steady)"
+        ),
+    )
+    parser.add_argument(
+        "--playback-fps",
+        type=int,
+        default=DEFAULT_PLAYBACK_FPS,
+        help=f"--video: fps of the preview mp4 (default {DEFAULT_PLAYBACK_FPS}; generation is 24)",
     )
     parser.add_argument(
         "--shape-mode",
@@ -582,12 +785,22 @@ def main(argv: list[str] | None = None) -> int:
         metavar="RUN_DIR",
         help=(
             "skip RunPod entirely -- just (re-)run primitive over an existing "
-            "run directory's out/generation-manifest.json. No prompts/model "
+            "run directory's out/generation-manifest.json (with --video, over its "
+            "clips' frames). No prompts/model "
             "needed; useful for iterating on shape-count/mode locally, or for "
             "testing this step without spending anything"
         ),
     )
     args = parser.parse_args(argv)
+
+    video_settings = VideoSettings(
+        shape_count=args.shape_count or DEFAULT_VIDEO_SHAPE_COUNT,
+        shape_mode=args.shape_mode,
+        drop_rate=args.drop_rate,
+        new_shapes=args.new_shapes_per_frame,
+        playback_fps=args.playback_fps,
+    )
+    image_shape_count = args.shape_count or DEFAULT_SHAPE_COUNT
 
     if args.list_bank:
         print("categories:", ", ".join(promptbank.CATEGORY_NAMES))
@@ -596,7 +809,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.process_only:
         primitive_bin = resolve_primitive_bin(args.primitive_bin)
-        m = process_run(Path(args.process_only), primitive_bin, args.shape_count, args.shape_mode)
+        run_dir = Path(args.process_only)
+        if args.video:
+            m = process_video_run(run_dir, primitive_bin, video_settings)
+        else:
+            m = process_run(run_dir, primitive_bin, image_shape_count, args.shape_mode)
         print(f"orchestrate: {m.ok_count} ok, {m.failed_count} failed")
         return 1 if m.ok_count == 0 else 0
 
@@ -649,16 +866,16 @@ def main(argv: list[str] | None = None) -> int:
         print(plan.job_cmd)
         return 0
 
-    if args.video:
-        return execute_video(plan, dict(os.environ))
-
     primitive_bin = resolve_primitive_bin(args.primitive_bin)
+
+    if args.video:
+        return execute_video(plan, dict(os.environ), primitive_bin, video_settings)
 
     return execute(
         plan,
         dict(os.environ),
         primitive_bin,
-        shape_count=args.shape_count,
+        shape_count=image_shape_count,
         shape_mode=args.shape_mode,
     )
 
