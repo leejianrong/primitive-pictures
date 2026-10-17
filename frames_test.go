@@ -84,3 +84,19 @@ func TestListFramesRejectsEmptyDir(t *testing.T) {
 		t.Fatal("expected an error for a directory with no frames")
 	}
 }
+
+func TestRunFramesDefaultBudgetHoldsShapeCountSteady(t *testing.T) {
+	in, out := t.TempDir(), t.TempDir()
+	writeFrames(t, in, 3)
+	setFramesGlobals()
+
+	// perFrame -1 = drop-rate x n: 10 shapes at 0.5 drops 5 and adds 5.
+	if err := runFrames(in, out, 10, -1, 0.5, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range readManifest(t, out)[1:] {
+		if it.Shapes != 10 || it.Dropped != 5 || it.Added != 5 {
+			t.Errorf("frame %d: shapes=%d dropped=%d added=%d, want 10/5/5", it.Index, it.Shapes, it.Dropped, it.Added)
+		}
+	}
+}

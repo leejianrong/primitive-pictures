@@ -50,10 +50,16 @@ Run `make` with no target for the full list. The important ones:
 - `make python-check` — lint + format-check `pipeline/` (ruff, via `uv`)
 - `make python-test` — `pipeline/`'s fast tests (no RunPod/network involved)
 - `make ci` — everything CI runs, in one shot
-- `bin/primitive -frames DIR -out DIR -n N -new-shapes-per-frame K -drop-rate R [-resume]` —
+- `bin/primitive -frames DIR -out DIR -n N [-drop-rate R] [-new-shapes-per-frame K] [-resume]` —
   frame-sequence mode: one process over an ordered frame directory, each frame seeded from the
   previous one's shapes (ADR-0007/0009); writes per-frame PNG/SVG + `frames.json`, prints a
-  continuity summary (ADR-0010). Use dynamic settings (drop about 30%, add about 30% of N).
+  continuity summary (ADR-0010). Dynamic by default: drop 30% (R=0.3), K defaults to R x N so the
+  count holds steady.
+- `pipeline/orchestrate.py --video --prompts FILE` — generate clips on RunPod, then run that mode
+  over each clip's frames and write a slowed preview `primitive.mp4` (`--playback-fps`, default 8)
+  plus a schema-2 `manifest.json`. `--video --process-only RUN_DIR` redoes just the local part
+  (free). Settings: `--shape-count` (default 500), `--shape-mode`, `--drop-rate`,
+  `--new-shapes-per-frame`.
 - `scripts/sweep.py FRAMES OUT [--fps 8] name:N:ADD:DROP ...` — render a frame dir under several
   settings and stitch slowed side-by-side mp4s for review (needs `bin/primitive` and ffmpeg).
 
