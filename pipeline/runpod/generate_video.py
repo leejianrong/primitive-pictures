@@ -2,9 +2,10 @@
 """Pod-side batch image-to-video generation (phase 3, ADR-0008). Runs INSIDE
 the RunPod pod, not locally.
 
-For each prompt: generates a still image with the existing image backend
-(reusing generate.py's `build_pipeline`/`generate_one`), then animates that
-still with the registered video backend (Wan2.2-TI2V-5B I2V by default),
+Two phases, so the image and video models are never in VRAM together: first
+every prompt's still image with the existing image backend (reusing
+generate.py's `build_pipeline`/`generate_one`), then the image model is freed
+and each still is animated with the registered video backend (Wan2.2-TI2V-5B I2V by default),
 saves every output frame as its own PNG, and exports a viewable `.mp4` purely
 for human inspection (diffusers' `export_to_video` utility, not a separate
 frame-extraction step -- the frames themselves come directly from the video
@@ -72,6 +73,128 @@ def generate_video_one(pipe, video_backend, still_image, prompt: str):
     return output.frames[0]
 
 
+def free_gpu_memory() -> None:
+    """Return a dropped pipeline's VRAM to the allocator. Callers must have already lost their
+    last reference to it (see generate_stills, which only returns the stills, not the pipeline)."""
+    import gc
+
+    gc.collect()
+    import torch
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def generate_stills(prompts, image_backend, out_dir, build_image_pipe, make_still, slugify):
+    """Phase 1: every still, then drop the image pipeline.
+
+    The pipeline lives only in this function's frame, so it is unreachable once we return and
+    the caller can free its VRAM before the video model loads. Holding FLUX and Wan2.2 together
+    peaked near 56GB (V5's run), which ruled out 48GB cards (ADR-0008 addendum).
+
+    Returns one row per prompt: the manifest row, plus the still image (None if it failed).
+    """
+    print(f"pod: loading still-image backend {image_backend.model_id}", flush=True)
+    image_pipe = build_image_pipe()
+    items = []
+    for i, prompt in enumerate(prompts):
+        item_dir = out_dir / f"{i:03d}-{slugify(prompt)}"
+        item_dir.mkdir(parents=True, exist_ok=True)
+        row = {
+            "index": i,
+            "prompt": prompt,
+            "image_model": image_backend.name,
+            "still_file": None,
+            "clip_file": None,
+            "frame_files": [],
+            "error": None,
+        }
+        t0 = time.time()
+        try:
+            still = make_still(image_pipe, image_backend, prompt)
+        except Exception as e:  # noqa: BLE001 -- one prompt's failure must not lose the rest
+            print(f"pod: FAILED still [{i + 1}/{len(prompts)}]: {e}", flush=True)
+            row["error"] = f"still generation failed: {e}"
+            items.append({"row": row, "still": None, "dir": item_dir, "t0": t0})
+            continue
+        still_rel = f"{item_dir.name}/still.png"
+        still.save(out_dir / still_rel)
+        row["still_file"] = still_rel
+        items.append({"row": row, "still": still, "dir": item_dir, "t0": t0})
+    return items
+
+
+def animate_stills(items, prompts, video_backend, out_dir, video_pipe, make_frames, export_clip):
+    """Phase 2: animate each saved still with the (now sole) video pipeline."""
+    manifest_rows = []
+    for i, item in enumerate(items):
+        row, still, item_dir = item["row"], item["still"], item["dir"]
+        row["video_model"] = video_backend.name
+        if still is None:
+            manifest_rows.append(row)
+            continue
+        t0 = time.time()
+        try:
+            frames = make_frames(video_pipe, video_backend, still, prompts[i])
+        except Exception as e:  # noqa: BLE001 -- same isolation for the video step
+            print(f"pod: FAILED video [{i + 1}/{len(prompts)}]: {e}", flush=True)
+            row["error"] = f"video generation failed: {e}"
+            manifest_rows.append(row)
+            continue
+
+        frame_files = []
+        for f, frame in enumerate(frames):
+            frame_rel = f"{item_dir.name}/frames/{f:04d}.png"
+            (out_dir / item_dir.name / "frames").mkdir(parents=True, exist_ok=True)
+            frame.save(out_dir / frame_rel)
+            frame_files.append(frame_rel)
+        row["frame_files"] = frame_files
+
+        clip_rel = f"{item_dir.name}/clip.mp4"
+        try:
+            export_clip(frames, str(out_dir / clip_rel), fps=video_backend.fps)
+            row["clip_file"] = clip_rel
+        except Exception as e:  # noqa: BLE001 -- clip export is for inspection only,
+            # a failure here shouldn't lose the frames already saved above.
+            print(f"pod: WARNING clip export failed [{i + 1}/{len(prompts)}]: {e}", flush=True)
+
+        elapsed = time.time() - t0
+        row["seconds"] = round(elapsed, 2)
+        manifest_rows.append(row)
+        print(
+            f"pod: [{i + 1}/{len(prompts)}] {len(frame_files)} frames in {elapsed:.1f}s",
+            flush=True,
+        )
+    return manifest_rows
+
+
+def run_batch(
+    prompts,
+    image_backend,
+    video_backend,
+    out_dir,
+    *,
+    build_image_pipe,
+    build_video_pipe,
+    make_still,
+    make_frames,
+    export_clip,
+    slugify,
+    free_gpu=free_gpu_memory,
+):
+    """Two-phase batch: all stills, free the image model, then load the video model and animate."""
+    items = generate_stills(prompts, image_backend, out_dir, build_image_pipe, make_still, slugify)
+    free_gpu()
+    print(f"pod: loading video backend {video_backend.model_id}", flush=True)
+    video_pipe = build_video_pipe()
+    rows = animate_stills(
+        items, prompts, video_backend, out_dir, video_pipe, make_frames, export_clip
+    )
+    del video_pipe
+    free_gpu()
+    return rows
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -99,75 +222,21 @@ def main() -> int:
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    manifest_rows = []
-
-    print(f"pod: loading still-image backend {image_backend.model_id}", flush=True)
-    image_pipe = build_pipeline(image_backend, dtype_map)
-    print(f"pod: loading video backend {video_backend.model_id}", flush=True)
-    video_pipe = build_video_pipeline(video_backend, dtype_map)
 
     from diffusers.utils import export_to_video
 
-    for i, prompt in enumerate(prompts):
-        item_dir = out_dir / f"{i:03d}-{slugify(prompt)}"
-        item_dir.mkdir(parents=True, exist_ok=True)
-        row = {
-            "index": i,
-            "prompt": prompt,
-            "image_model": image_backend.name,
-            "video_model": video_backend.name,
-            "still_file": None,
-            "clip_file": None,
-            "frame_files": [],
-            "error": None,
-        }
-
-        t0 = time.time()
-        try:
-            still = generate_one(image_pipe, image_backend, prompt)
-        except Exception as e:  # noqa: BLE001 -- one prompt's failure must not lose the rest
-            print(f"pod: FAILED still [{i + 1}/{len(prompts)}]: {e}", flush=True)
-            row["error"] = f"still generation failed: {e}"
-            manifest_rows.append(row)
-            continue
-        still_rel = f"{item_dir.name}/still.png"
-        still.save(out_dir / still_rel)
-        row["still_file"] = still_rel
-
-        try:
-            frames = generate_video_one(video_pipe, video_backend, still, prompt)
-        except Exception as e:  # noqa: BLE001 -- same isolation for the video step
-            print(f"pod: FAILED video [{i + 1}/{len(prompts)}]: {e}", flush=True)
-            row["error"] = f"video generation failed: {e}"
-            manifest_rows.append(row)
-            continue
-
-        frame_files = []
-        for f, frame in enumerate(frames):
-            frame_rel = f"{item_dir.name}/frames/{f:04d}.png"
-            (out_dir / item_dir.name / "frames").mkdir(parents=True, exist_ok=True)
-            frame.save(out_dir / frame_rel)
-            frame_files.append(frame_rel)
-        row["frame_files"] = frame_files
-
-        clip_rel = f"{item_dir.name}/clip.mp4"
-        try:
-            export_to_video(frames, str(out_dir / clip_rel), fps=video_backend.fps)
-            row["clip_file"] = clip_rel
-        except Exception as e:  # noqa: BLE001 -- clip export is for inspection only,
-            # a failure here shouldn't lose the frames already saved above.
-            print(f"pod: WARNING clip export failed [{i + 1}/{len(prompts)}]: {e}", flush=True)
-
-        elapsed = time.time() - t0
-        row["seconds"] = round(elapsed, 2)
-        manifest_rows.append(row)
-        print(
-            f"pod: [{i + 1}/{len(prompts)}] {len(frame_files)} frames in {elapsed:.1f}s",
-            flush=True,
-        )
-
-    del image_pipe, video_pipe
-    torch.cuda.empty_cache()
+    manifest_rows = run_batch(
+        prompts,
+        image_backend,
+        video_backend,
+        out_dir,
+        build_image_pipe=lambda: build_pipeline(image_backend, dtype_map),
+        build_video_pipe=lambda: build_video_pipeline(video_backend, dtype_map),
+        make_still=generate_one,
+        make_frames=generate_video_one,
+        export_clip=export_to_video,
+        slugify=slugify,
+    )
 
     (out_dir / "generation-manifest.json").write_text(json.dumps(manifest_rows, indent=2))
 

@@ -114,6 +114,10 @@ class VideoBackend:
     license: str
 
 
+# GPU sizing for the video job: generate_video.py runs two phases (all FLUX stills, free FLUX, then
+# Wan2.2), so peak VRAM is the larger model, not the 56 GB sum V5 needed. A 48 GB card (A40) should
+# fit, at about a fifth of an 80 GB card's price, but that is unverified on a real pod (ADR-0008,
+# PRI-45 addendum). It needs its own RP_GPU_TYPE and a lower --max-hourly-usd (about 0.6).
 VIDEO_BACKENDS: dict[str, VideoBackend] = {
     # Apache-2.0, same license tier as flux-schnell. height/width/num_frames
     # here are the cheaper "480p-class" tier documented across Wan2.1/2.2

@@ -188,3 +188,17 @@ additional model/job-command branch alongside the existing image job.
   by the account balance ($8.49 to $7.99). An earlier 41-frame run of the same eight
   prompts cost $0.23 by the billing history. Slowed to 8 fps the clips play for
   about 5 s, which is the length that reviewed well.
+
+- **Two-phase job: free FLUX before loading Wan2.2 (PRI-45, built 2026-10-17, not yet run
+  on a real pod):** `generate_video.py` now generates every still first, drops the image
+  pipeline (`gc.collect()` + `torch.cuda.empty_cache()`), and only then loads Wan2.2 and
+  animates. Peak VRAM becomes the larger of the two models instead of their sum (about
+  56 GB), so a 48 GB card such as the A40 ($0.49/hr against $2.49/hr for the RTX PRO 6000)
+  should now fit. FLUX was seen OOM on 32 GB mid-inference (~31 GB used, see `config.py`),
+  so 48 GB leaves headroom but not a wide margin. `offline_video_smoke.py` covers the
+  ordering on CPU: it asserts the image pipeline is unreachable when the video model loads.
+  That proves the order, not the memory. **Unverified:** that an A40 actually runs the
+  whole job. It needs its own `RP_GPU_TYPE` and a cap near $0.6/hr, and a real pod run to
+  confirm. Earlier A40 attempts stuck at `awaiting_container`, and stock has been patchy,
+  so check availability first. One side effect: stills now exist for every prompt before any
+  clip does, so a crash during the video phase still leaves all the stills in the output.
