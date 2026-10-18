@@ -189,16 +189,20 @@ additional model/job-command branch alongside the existing image job.
   prompts cost $0.23 by the billing history. Slowed to 8 fps the clips play for
   about 5 s, which is the length that reviewed well.
 
-- **Two-phase job: free FLUX before loading Wan2.2 (PRI-45, built 2026-10-17, not yet run
-  on a real pod):** `generate_video.py` now generates every still first, drops the image
-  pipeline (`gc.collect()` + `torch.cuda.empty_cache()`), and only then loads Wan2.2 and
-  animates. Peak VRAM becomes the larger of the two models instead of their sum (about
-  56 GB), so a 48 GB card such as the A40 ($0.49/hr against $2.49/hr for the RTX PRO 6000)
-  should now fit. FLUX was seen OOM on 32 GB mid-inference (~31 GB used, see `config.py`),
-  so 48 GB leaves headroom but not a wide margin. `offline_video_smoke.py` covers the
-  ordering on CPU: it asserts the image pipeline is unreachable when the video model loads.
-  That proves the order, not the memory. **Unverified:** that an A40 actually runs the
-  whole job. It needs its own `RP_GPU_TYPE` and a cap near $0.6/hr, and a real pod run to
-  confirm. Earlier A40 attempts stuck at `awaiting_container`, and stock has been patchy,
-  so check availability first. One side effect: stills now exist for every prompt before any
-  clip does, so a crash during the video phase still leaves all the stills in the output.
+- **Two-phase job: free FLUX before loading Wan2.2 (PRI-45, merged 2026-10-19, validated on
+  an A40):** `generate_video.py` generates every still first, drops the image pipeline
+  (`gc.collect()` + `torch.cuda.empty_cache()`), and only then loads Wan2.2 and animates. Peak
+  VRAM is the larger of the two models instead of their sum (about 56 GB). `offline_video_smoke.py`
+  asserts on CPU that the image pipeline is unreachable when the video model loads (the order, not
+  the memory).
+  **Real run, `run-20261018-174235`:** `RP_GPU_TYPE="NVIDIA A40"`, `--max-hourly-usd 0.6`, two
+  prompts. The pod was quoted at $0.59/hr with 50 GB RAM. Both clips came back with 81 frames, no
+  errors, no out-of-memory message in the pod log, and the pod was torn down and verified. The
+  account balance went from $7.969 to $7.875, so the run cost about $0.09. Peak VRAM was not
+  measured, only that nothing failed on 48 GB.
+  **The saving is smaller than first estimated.** The A40 took about 200 s per clip against about
+  70 s on the RTX PRO 6000, so an 8-clip run should cost roughly $0.31 (about 32 minutes at
+  $0.59/hr) against $0.50, not a fifth. It still widens the GPU choice when 80 GB cards are out of
+  stock. A40 stock read "Low" on 2026-10-19, and earlier A40 attempts got stuck at
+  `awaiting_container`, so check availability first. A side effect of the two phases: every still
+  exists before any clip does, so a crash in the video phase still leaves all the stills.

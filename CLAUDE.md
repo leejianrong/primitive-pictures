@@ -33,6 +33,7 @@ right and this file is stale — fix the file.
 - `scripts/` — `pre-push` (git hook, see below), plus `html.py`/`process.py`
   helper scripts for batch runs.
 - `examples/` — sample input images used by `make run` and tests.
+- `docs/STATUS.md` — where the project stands and what is open; read it right after this file.
 - `docs/` — `PLAN.md`, `SLICES.md`, `QUESTIONS.md`, `adr/` for the RunPod
   pipeline + pointillism-mode phase. Read `PLAN.md` before touching `pipeline/`.
 
